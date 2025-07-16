@@ -885,11 +885,11 @@ from modules.interval_shell import DEFAULT_HYPERPARAMETERS
 
 # ── Models to try (include or comment out as you like) ───────────────────────
 model_list = [
-    'sipls',
+    # 'sipls',
     # 'random_forest',
     # 'svr',
     # 'xgboost',
-    # 'mlp',
+    'mlp',
     # 'knn',
     # 'gpr'
 ]
@@ -922,8 +922,8 @@ hyperparam_grids = {
     ],
     'mlp': [
         {'hidden_layer_sizes': (100,), 'max_iter': 1000},
-        {'hidden_layer_sizes': (200,), 'max_iter': 1000},
-        {'hidden_layer_sizes': (100,100), 'max_iter': 1000},
+        # {'hidden_layer_sizes': (200,), 'max_iter': 1000},
+        # {'hidden_layer_sizes': (100,100), 'max_iter': 1000},
     ],
     'knn': [
         {'n_neighbors': 3},
@@ -940,12 +940,12 @@ hyperparam_grids = {
 # ── Preprocessing chains ────────────────────────────────────────────────────
 preprocess_grid = [
     [],                    # no preprocessing
-    ['EMSC'],
-    ['SNV'],
-    ['Normalization'],
-    ['Second Derivative'],
-    ['EMSC', 'SNV'],
-    ['SNV', 'Second Derivative']
+    # ['EMSC'],
+    # ['SNV'],
+    # ['Normalization'],
+    # ['Second Derivative'],
+    # ['EMSC', 'SNV'],
+    # ['SNV', 'Second Derivative']
 ]
 
 # =============================================================================

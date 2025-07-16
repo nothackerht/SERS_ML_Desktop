@@ -207,24 +207,37 @@ def leave_one_out_test_evaluation(
 
     
     
-    # parity plots
-    for (m, prep), grp in df.groupby(['model','preprocess']):
+    # -------------- pick best-preproc per model --------------
+    # metrics is a DataFrame indexed by (model, preprocess)
+    # and has an 'RMSE' column
+    best_per_model = (
+        metrics
+        .reset_index()                                # bring model,preprocess back to columns
+        .sort_values(['model','RMSE'], ascending=[True,True])
+        .drop_duplicates('model', keep='first')       # keep the row with lowest RMSE per model
+    )
+    # now best_per_model is something like:
+    #    model        preprocess       RMSE     R2
+    # 0  sipls        ""               0.123   0.85
+    # 1  random_forest "SNV"           0.234   0.79
+    # etc.
+
+    # -------------- plot only those --------------
+    for _, row in best_per_model.iterrows():
+        m    = row['model']
+        prep = row['preprocess']
+        rmse = row['RMSE']
+        r2   = row['R2']
+
+        # grab the predictions for that combination
+        grp = df[
+            (df['model'] == m) & 
+            (df['preprocess'] == prep)
+        ]
+
         y_true = grp['true'].values
         y_pred = grp['pred_mean'].values
-    
-        # leave-one-out metrics
-        rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-        r2   = r2_score(y_true, y_pred)
-    
-        # pick the most common hyperparams string
-        best_hp_str = grp['hyperparams'].mode().iloc[0]
-        # optionally pretty-print it
-        try:
-            best_hp = json.loads(best_hp_str)
-            best_hp_str = json.dumps(best_hp, indent=1)
-        except:
-            pass
-    
+
         plt.figure(figsize=(6,6))
         plt.errorbar(
             y_true,
@@ -234,31 +247,30 @@ def leave_one_out_test_evaluation(
             capsize=4
         )
         mn, mx = y_true.min(), y_true.max()
-        plt.plot([mn, mx], [mn, mx], 'r--')
-    
+        plt.plot([mn,mx], [mn,mx], 'r--')
+
         plt.xlabel(target_column, fontweight='bold')
         plt.ylabel(target_column, fontweight='bold')
-    
-        # put model, prep, hp, rmse & R² all in the title
+
+        # put everything into the title
         plt.title(
-            f"{m} | Preproc: {prep}\n"
-            f"Best HP: {best_hp_str}\n"
-            f"RMSE: {rmse:.3f},  R²: {r2:.3f}",
+            f"{m}\n"
+            f"Preproc = {prep or 'None'}\n"
+            f"Best Hyperparams: {grp['hyperparams'].mode().iloc[0]}\n"
+            f"RMSE = {rmse:.3f},  R² = {r2:.3f}",
             fontsize=10,
-            loc='left'
+            loc='center'
         )
-    
+
         plt.tight_layout()
         plt.savefig(
-            os.path.join(output_dir, f"parity_{m}_{prep.replace('+','_')}.png"),
+            os.path.join(output_dir, f"parity_{m.replace(' ','_')}.png"),
             dpi=300
         )
         plt.show()
 
-        
-
+    # finally return the results
     return df, metrics
-
 if __name__ == "__main__":
     # ────────────────────────────────────────────────────────────────
     # 10-Fold LOO (example invocation with your new paths)
