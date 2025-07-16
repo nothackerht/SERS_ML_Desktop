@@ -59,20 +59,23 @@ def leave_one_out_test_evaluation(
                 ])                                                        # (n_spectra_total,)
                 groups = np.repeat(np.arange(n_train + n_test - 1), 9)
 
+               
                 # Inner CV for hyperparameter tuning
                 best_rmse = np.inf
                 best_hp   = None
                 inner     = GroupKFold(n_splits=5)
+            
                 for hp in hyperparam_grids.get(model_name, []):
                     fold_rmses = []
+            
                     for iti, ito in inner.split(X_raw, y_vals, groups=groups):
-                        # split raw spectra
-                        X_tr_raw = X_raw[iti].T
-                        X_vl_raw = X_raw[ito].T
-                        y_tr      = y_vals[iti]
+                        # — split into train / val raw spectra & labels —
+                        X_tr_raw = X_raw[iti].T      # shape (n_wavenumbers, n_train_spectra)
+                        X_vl_raw = X_raw[ito].T      # shape (n_wavenumbers, n_val_spectra)
+                        y_tr      = y_vals[iti]      # 1D array, length = train_spectra_count
                         y_vl      = y_vals[ito]
-
-                        # apply preprocessing chain
+            
+                        # — apply your prep_chain exactly as before —
                         Xp_tr = X_tr_raw.copy()
                         Xp_vl = X_vl_raw.copy()
                         for method in prep_chain:
@@ -89,32 +92,49 @@ def leave_one_out_test_evaluation(
                             elif method == 'Second Derivative':
                                 Xp_tr = Preprocessing(Xp_tr).second_derivative(Xp_tr)
                                 Xp_vl = Preprocessing(Xp_vl).second_derivative(Xp_vl)
-
+            
+                        # transpose back to (n_spectra, n_wavenumbers)
                         Xp_tr = Xp_tr.T
                         Xp_vl = Xp_vl.T
-
-                        # fit & predict on val
+            
+                        # — ensure float32 + contiguous for features —
+                        X_tr32 = np.ascontiguousarray(Xp_tr, dtype=np.float32)
+                        X_vl32 = np.ascontiguousarray(Xp_vl, dtype=np.float32)
+                        
+                        # — shape y correctly for sipls vs. sklearn models —
+                        if model_name == 'sipls':
+                            # torch_pls wants (n_samples,1)
+                            y_input = y_tr.astype(np.float32).reshape(-1, 1)
+                        else:
+                            # everything else (RF, SVR, XGBoost, etc.) wants (n_samples,)
+                            y_input = y_tr.astype(np.float32)
+                        
+                        # — fit & predict —
                         mdl = get_model_by_name(model_name, hp)
-                        mdl.fit(Xp_tr, y_tr.reshape(-1,1))
-                        preds = mdl.predict(Xp_vl).flatten()
+                        mdl.fit(X_tr32, y_input)
+                        preds = mdl.predict(X_vl32).flatten()
+                        
 
-                        # sample-level RMSE
-                        s_true = y_vl.reshape(-1,9).mean(axis=1)
-                        s_pred = preds.reshape(-1,9).mean(axis=1)
+            
+                        # — compute sample-level RMSE —
+                        s_true = y_vl.reshape(-1, 9).mean(axis=1)
+                        s_pred = preds.reshape(-1, 9).mean(axis=1)
                         fold_rmses.append(np.sqrt(mean_squared_error(s_true, s_pred)))
-
+            
                     avg_rmse = np.mean(fold_rmses)
                     if avg_rmse < best_rmse:
                         best_rmse = avg_rmse
                         best_hp   = hp
 
-                # retrain on full combined + predict held-out nine spectra
-                # preprocess full combined
-                X_full_raw = X_raw.T
+
+                # ─── Retrain on full combined + predict held-out nine spectra ───
+                
+                # 1) Preprocess full combined spectra
+                X_full_raw = X_raw.T                                  # (n_spectra_total, n_wavenumbers) transposed back
                 Xp_full    = X_full_raw.copy()
                 for method in prep_chain:
                     if method == 'EMSC':
-                        ref     = np.mean(Xp_full, axis=1)
+                        ref     = Xp_full.mean(axis=1)
                         Xp_full = Preprocessing(None).emsc(Xp_full, reference=ref)
                     elif method == 'SNV':
                         Xp_full = Preprocessing(Xp_full).snv(Xp_full)
@@ -122,14 +142,22 @@ def leave_one_out_test_evaluation(
                         Xp_full = Preprocessing(Xp_full).normalize_spectrum(Xp_full)
                     elif method == 'Second Derivative':
                         Xp_full = Preprocessing(Xp_full).second_derivative(Xp_full)
-                Xp_full = Xp_full.T
-
-                # preprocess held-out block (9 spectra)
-                loo_raw = all_test[:, to]  # (n_wavenumbers,9)
+                Xp_full = Xp_full.T                                   # back to (n_spectra_total, n_wavenumbers)
+                
+                # 2) Cast to float32 & contiguous for training
+                X_full32 = np.ascontiguousarray(Xp_full, dtype=np.float32)
+                
+                # — shape y correctly for sipls vs. sklearn models —
+                if model_name == 'sipls':
+                    y_full_input = y_vals.astype(np.float32).reshape(-1, 1)
+                else:
+                    y_full_input = y_vals.astype(np.float32)
+                # 3) Preprocess held-out block (9 spectra)
+                loo_raw = all_test[:, to]                             # (n_wavenumbers, 9)
                 Xp_loo = loo_raw.copy()
                 for method in prep_chain:
                     if method == 'EMSC':
-                        ref    = np.mean(X_full_raw, axis=1)
+                        ref     = X_full_raw.mean(axis=1)
                         Xp_loo = Preprocessing(None).emsc(Xp_loo, reference=ref)
                     elif method == 'SNV':
                         Xp_loo = Preprocessing(Xp_loo).snv(Xp_loo)
@@ -137,16 +165,19 @@ def leave_one_out_test_evaluation(
                         Xp_loo = Preprocessing(Xp_loo).normalize_spectrum(Xp_loo)
                     elif method == 'Second Derivative':
                         Xp_loo = Preprocessing(Xp_loo).second_derivative(Xp_loo)
-                Xp_loo = Xp_loo.T  # (9, n_wavenumbers)
-
+                Xp_loo = Xp_loo.T                                    # (9, n_wavenumbers)
+                
+                # 4) Cast held-out block for prediction
+                X_loo32 = np.ascontiguousarray(Xp_loo, dtype=np.float32)
+                
+                # 5) Fit on full data & predict held-out
                 mdl = get_model_by_name(model_name, best_hp)
-                mdl.fit(Xp_full, y_vals.reshape(-1,1))
-                raw_preds = mdl.predict(Xp_loo).flatten()  # list of 9
-
-                # store all 9 preds plus mean/std
+                mdl.fit(X_full32, y_full_input)
+                raw_preds = mdl.predict(X_loo32).flatten()
+                # 6) Store mean/std of the nine predictions
                 pred_mean = raw_preds.mean()
                 pred_std  = raw_preds.std()
-
+                
                 results.append({
                     'fold':       fold,
                     'model':      model_name,
@@ -158,6 +189,7 @@ def leave_one_out_test_evaluation(
                     'pred_std':   pred_std,
                     'true':       meta_test[target_column].values[held]
                 })
+
 
     # assemble dataframe
     df = pd.DataFrame(results)
@@ -173,23 +205,57 @@ def leave_one_out_test_evaluation(
     )
     metrics.to_csv(os.path.join(output_dir, 'loo_metrics.csv'))
 
+    
+    
     # parity plots
     for (m, prep), grp in df.groupby(['model','preprocess']):
+        y_true = grp['true'].values
+        y_pred = grp['pred_mean'].values
+    
+        # leave-one-out metrics
+        rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+        r2   = r2_score(y_true, y_pred)
+    
+        # pick the most common hyperparams string
+        best_hp_str = grp['hyperparams'].mode().iloc[0]
+        # optionally pretty-print it
+        try:
+            best_hp = json.loads(best_hp_str)
+            best_hp_str = json.dumps(best_hp, indent=1)
+        except:
+            pass
+    
         plt.figure(figsize=(6,6))
         plt.errorbar(
-            grp['true'],
-            grp['pred_mean'],
-            yerr=grp['pred_std'], fmt='o', capsize=4
+            y_true,
+            y_pred,
+            yerr=grp['pred_std'],
+            fmt='o',
+            capsize=4
         )
-        mn, mx = grp['true'].min(), grp['true'].max()
-        plt.plot([mn,mx],[mn,mx],'r--')
+        mn, mx = y_true.min(), y_true.max()
+        plt.plot([mn, mx], [mn, mx], 'r--')
+    
         plt.xlabel(target_column, fontweight='bold')
         plt.ylabel(target_column, fontweight='bold')
-        plt.title(f"{m} | Preproc: {prep}", fontsize=12)
+    
+        # put model, prep, hp, rmse & R² all in the title
+        plt.title(
+            f"{m} | Preproc: {prep}\n"
+            f"Best HP: {best_hp_str}\n"
+            f"RMSE: {rmse:.3f},  R²: {r2:.3f}",
+            fontsize=10,
+            loc='left'
+        )
+    
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f"parity_{m}_{prep.replace('+','_')}.png"), dpi=300)
+        plt.savefig(
+            os.path.join(output_dir, f"parity_{m}_{prep.replace('+','_')}.png"),
+            dpi=300
+        )
         plt.show()
-        plt.close()
+
+        
 
     return df, metrics
 

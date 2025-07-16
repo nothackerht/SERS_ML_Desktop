@@ -886,12 +886,12 @@ from modules.interval_shell import DEFAULT_HYPERPARAMETERS
 # ── Models to try (include or comment out as you like) ───────────────────────
 model_list = [
     'sipls',
-    'random_forest',
-    'svr',
-    'xgboost',
-    'mlp',
-    'knn',
-    'gpr'
+    # 'random_forest',
+    # 'svr',
+    # 'xgboost',
+    # 'mlp',
+    # 'knn',
+    # 'gpr'
 ]
 
 # =============================================================================
@@ -953,8 +953,8 @@ preprocess_grid = [
 # =============================================================================
 targets = [
     ("Splicing Index",     "target_SI"),
-    ("Hand‐Grip Strength", "HGS_pp_avg"),
-    ("Ankle Dorsiflexion",  "ADF_pp_avg")
+    # ("Hand‐Grip Strength", "HGS_pp_avg"),
+    # ("Ankle Dorsiflexion",  "ADF_pp_avg")
 ]
 
 # ── Set your new data locations here ────────────────────────────────────────
