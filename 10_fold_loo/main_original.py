@@ -906,24 +906,24 @@ hyperparam_grids = {
         {'n_components': 10, 'device': 'cuda'},
     ],
     'random_forest': [
-        {'n_estimators': 50, 'max_depth': 10},
+        # {'n_estimators': 50, 'max_depth': 10},
         {'n_estimators': 100, 'max_depth': None},
-        {'n_estimators': 200, 'max_depth': 20},
+        # {'n_estimators': 200, 'max_depth': 20},
     ],
     'xgboost': [
         {'n_estimators': 100, 'learning_rate': 0.1},
-        {'n_estimators': 200, 'learning_rate': 0.05},
-        {'n_estimators': 300, 'learning_rate': 0.01},
+        # {'n_estimators': 200, 'learning_rate': 0.05},
+        # {'n_estimators': 300, 'learning_rate': 0.01},
     ],
     'svr': [
         {'C': 1.0, 'epsilon': 0.1},
-        {'C': 10.0, 'epsilon': 0.1},
-        {'C': 10.0, 'epsilon': 0.2},
+        # {'C': 10.0, 'epsilon': 0.1},
+        # {'C': 10.0, 'epsilon': 0.2},
     ],
     'mlp': [
         {'hidden_layer_sizes': (100,), 'max_iter': 1000},
-        {'hidden_layer_sizes': (200,), 'max_iter': 1000},
-        {'hidden_layer_sizes': (100,100), 'max_iter': 1000},
+        # {'hidden_layer_sizes': (200,), 'max_iter': 1000},
+        # {'hidden_layer_sizes': (100,100), 'max_iter': 1000},
     ],
     'knn': [
         {'n_neighbors': 3},
@@ -939,7 +939,7 @@ hyperparam_grids = {
 
 # ── Preprocessing chains ────────────────────────────────────────────────────
 preprocess_grid = [
-    # [],                    # no preprocessing
+    [],                    # no preprocessing
     # ['EMSC'],
     ['IntervalPLS'],
     # ['SNV'],

@@ -68,7 +68,7 @@ def leave_one_out_test_evaluation(
                         n_intervals=150,
                         n_components=2,
                         cv_folds=5,
-                        threshold=0.0
+                        threshold=0.2
                     )
                 else:
                     # no IntervalPLS → keep all features
