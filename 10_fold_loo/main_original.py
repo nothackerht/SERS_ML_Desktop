@@ -889,8 +889,8 @@ model_list = [
     # 'random_forest',
     # 'svr',
     # 'xgboost',
-    'mlp',
-    # 'knn',
+    # 'mlp',
+    'knn',
     # 'gpr'
 ]
 
@@ -922,8 +922,8 @@ hyperparam_grids = {
     ],
     'mlp': [
         {'hidden_layer_sizes': (100,), 'max_iter': 1000},
-        # {'hidden_layer_sizes': (200,), 'max_iter': 1000},
-        # {'hidden_layer_sizes': (100,100), 'max_iter': 1000},
+        {'hidden_layer_sizes': (200,), 'max_iter': 1000},
+        {'hidden_layer_sizes': (100,100), 'max_iter': 1000},
     ],
     'knn': [
         {'n_neighbors': 3},
@@ -932,15 +932,16 @@ hyperparam_grids = {
     ],
     'gpr': [
         {'alpha': 1e-10},
-        {'alpha': 1e-5},
-        {'alpha': 1e-2},
+        # {'alpha': 1e-5},
+        # {'alpha': 1e-2},
     ],
 }
 
 # ── Preprocessing chains ────────────────────────────────────────────────────
 preprocess_grid = [
-    [],                    # no preprocessing
+    # [],                    # no preprocessing
     # ['EMSC'],
+    ['IntervalPLS'],
     # ['SNV'],
     # ['Normalization'],
     # ['Second Derivative'],

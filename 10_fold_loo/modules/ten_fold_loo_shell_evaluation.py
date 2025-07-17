@@ -58,6 +58,24 @@ def leave_one_out_test_evaluation(
                     np.repeat(meta_test[target_column].values[np.setdiff1d(np.arange(n_test), held)], 9)
                 ])                                                        # (n_spectra_total,)
                 groups = np.repeat(np.arange(n_train + n_test - 1), 9)
+                # --- OUTER IntervalPLS feature‐selection (once per outer fold) ---
+                if 'IntervalPLS' in prep_chain:
+                    # X_raw is (n_spectra, n_wavenumbers) but our selector expects (n_samples, n_features)
+                    X_outer = X_raw                # rows=spectra, cols=wavenumbers
+                    y_outer = y_vals               # vector of length n_spectra
+                    sel = Preprocessing(X_outer).select_intervals_by_pls_r2(
+                        X_outer, y_outer,
+                        n_intervals=150,
+                        n_components=2,
+                        cv_folds=5,
+                        threshold=0.0
+                    )
+                else:
+                    # no IntervalPLS → keep all features
+                    sel = np.arange(X_raw.shape[1])
+                # keep everything except IntervalPLS for inner‐loop & final unsupervised steps
+                other_methods = [m for m in prep_chain if m != 'IntervalPLS']
+
 
                
                 # Inner CV for hyperparameter tuning
@@ -75,27 +93,25 @@ def leave_one_out_test_evaluation(
                         y_tr      = y_vals[iti]      # 1D array, length = train_spectra_count
                         y_vl      = y_vals[ito]
             
-                        # — apply your prep_chain exactly as before —
-                        Xp_tr = X_tr_raw.copy()
-                        Xp_vl = X_vl_raw.copy()
-                        for method in prep_chain:
-                            if method == 'EMSC':
-                                ref   = np.mean(Xp_tr, axis=1)
-                                Xp_tr = Preprocessing(None).emsc(Xp_tr, reference=ref)
-                                Xp_vl = Preprocessing(None).emsc(Xp_vl, reference=ref)
-                            elif method == 'SNV':
-                                Xp_tr = Preprocessing(Xp_tr).snv(Xp_tr)
-                                Xp_vl = Preprocessing(Xp_vl).snv(Xp_vl)
-                            elif method == 'Normalization':
-                                Xp_tr = Preprocessing(Xp_tr).normalize_spectrum(Xp_tr)
-                                Xp_vl = Preprocessing(Xp_vl).normalize_spectrum(Xp_vl)
-                            elif method == 'Second Derivative':
-                                Xp_tr = Preprocessing(Xp_tr).second_derivative(Xp_tr)
-                                Xp_vl = Preprocessing(Xp_vl).second_derivative(Xp_vl)
-            
-                        # transpose back to (n_spectra, n_wavenumbers)
+                        # — apply just the *other* (unsupervised) preprocessing on the train block —
+                        prep = Preprocessing(X_tr_raw)
+                        Xp_tr = prep.preprocess(other_methods)
+                        
+                        # — apply same unsupervised chain on the val block —
+                        Xp_vl = Preprocessing(X_vl_raw).preprocess(other_methods)
+                                            
+                        # — now *slice* each to the selected intervals from the outer fold —
+                        # (slice rows/features, not columns)
+                        Xp_tr = Xp_tr[sel, :]    # keep only those feature‐rows
+                        Xp_vl = Xp_vl[sel, :]
+                        
+                        # now Xp_tr, Xp_vl are shape (n_selected_wavenumbers, n_spectra)
+                        # transpose back to (n_spectra, n_selected_wavenumbers)
                         Xp_tr = Xp_tr.T
                         Xp_vl = Xp_vl.T
+
+
+
             
                         # — ensure float32 + contiguous for features —
                         X_tr32 = np.ascontiguousarray(Xp_tr, dtype=np.float32)
@@ -128,48 +144,41 @@ def leave_one_out_test_evaluation(
 
 
                 # ─── Retrain on full combined + predict held-out nine spectra ───
-                
-                # 1) Preprocess full combined spectra
-                X_full_raw = X_raw.T                                  # (n_spectra_total, n_wavenumbers) transposed back
-                Xp_full    = X_full_raw.copy()
-                for method in prep_chain:
-                    if method == 'EMSC':
-                        ref     = Xp_full.mean(axis=1)
-                        Xp_full = Preprocessing(None).emsc(Xp_full, reference=ref)
-                    elif method == 'SNV':
-                        Xp_full = Preprocessing(Xp_full).snv(Xp_full)
-                    elif method == 'Normalization':
-                        Xp_full = Preprocessing(Xp_full).normalize_spectrum(Xp_full)
-                    elif method == 'Second Derivative':
-                        Xp_full = Preprocessing(Xp_full).second_derivative(Xp_full)
-                Xp_full = Xp_full.T                                   # back to (n_spectra_total, n_wavenumbers)
-                
-                # 2) Cast to float32 & contiguous for training
+                # 1) Apply only the “other” (unsupervised) steps to the full training pool
+                X_full_raw = X_raw.T  # (n_spectra_total, n_wavenumbers)
+                other_methods = [m for m in prep_chain if m != 'IntervalPLS']
+                prep_full = Preprocessing(X_full_raw)
+                Xp_full_unsup = prep_full.preprocess(other_methods)       # (n_wavenumbers, n_spectra_total)
+    
+                # 2) Slice to the intervals selected in the outer fold
+                Xp_full_sel = Xp_full_unsup[sel, :]                       # (n_selected_wavenumbers, n_spectra_total)
+    
+                # 3) Transpose to (n_spectra_total, n_selected_wavenumbers)
+                Xp_full = Xp_full_sel.T                                   
+    
+                # 4) Cast to float32 & contiguous for training
                 X_full32 = np.ascontiguousarray(Xp_full, dtype=np.float32)
-                
-                # — shape y correctly for sipls vs. sklearn models —
+    
+                # 5) Prepare the full-pool target array
                 if model_name == 'sipls':
                     y_full_input = y_vals.astype(np.float32).reshape(-1, 1)
                 else:
                     y_full_input = y_vals.astype(np.float32)
-                # 3) Preprocess held-out block (9 spectra)
-                loo_raw = all_test[:, to]                             # (n_wavenumbers, 9)
-                Xp_loo = loo_raw.copy()
-                for method in prep_chain:
-                    if method == 'EMSC':
-                        ref     = X_full_raw.mean(axis=1)
-                        Xp_loo = Preprocessing(None).emsc(Xp_loo, reference=ref)
-                    elif method == 'SNV':
-                        Xp_loo = Preprocessing(Xp_loo).snv(Xp_loo)
-                    elif method == 'Normalization':
-                        Xp_loo = Preprocessing(Xp_loo).normalize_spectrum(Xp_loo)
-                    elif method == 'Second Derivative':
-                        Xp_loo = Preprocessing(Xp_loo).second_derivative(Xp_loo)
-                Xp_loo = Xp_loo.T                                    # (9, n_wavenumbers)
-                
-                # 4) Cast held-out block for prediction
+    
+                # 6) Transform the held-out block with the same unsupervised chain
+                loo_raw = all_test[:, to]                                  # (n_wavenumbers, 9)
+                prep_loo = Preprocessing(loo_raw)
+                Xp_loo_unsup = prep_loo.preprocess(other_methods)          # (n_wavenumbers, 9)
+    
+                # 7) Slice to the same selected intervals
+                Xp_loo_sel = Xp_loo_unsup[sel, :]                          # (n_selected_wavenumbers, 9)
+    
+                # 8) Transpose to (9, n_selected_wavenumbers)
+                Xp_loo = Xp_loo_sel.T                                      
+    
+                # 9) Cast to float32 & contiguous for prediction
                 X_loo32 = np.ascontiguousarray(Xp_loo, dtype=np.float32)
-                
+    
                 # 5) Fit on full data & predict held-out
                 mdl = get_model_by_name(model_name, best_hp)
                 mdl.fit(X_full32, y_full_input)
