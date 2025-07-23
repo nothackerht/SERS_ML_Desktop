@@ -942,7 +942,7 @@ model_list = [
     # 'svr',
     'xgboost',
     # 'mlp',
-    'knn',
+    # 'knn',
     # 'gpr'
 ]
 
@@ -1002,17 +1002,17 @@ param_grid = {
 # ── Preprocessing chains ────────────────────────────────────────────────────
 preprocess_grid = [
     [],                    # no preprocessing
-    ['EMSC'],
-    ['IntervalPLS'],
-    ['SNV'],
-    ['SNV', 'IntervalPLS'],
-    ['Normalization', 'IntervalPLS'],
-    ['IntervalPLS', 'Normalization' ],
-    ['Second Derivative'],
-    ['EMSC', 'SNV'],
-    ['IntervalPLS','EMSC', 'SNV'],
-    ['EMSC', 'SNV', 'IntervalPLS' ],
-    ['SNV', 'Second Derivative']
+    # ['EMSC'],
+    # ['IntervalPLS'],
+    # ['SNV'],
+    # ['SNV', 'IntervalPLS'],
+    # ['Normalization', 'IntervalPLS'],
+    # ['IntervalPLS', 'Normalization' ],
+    # ['Second Derivative'],
+    # ['EMSC', 'SNV'],
+    # ['IntervalPLS','EMSC', 'SNV'],
+    # ['EMSC', 'SNV', 'IntervalPLS' ],
+    # ['SNV', 'Second Derivative']
 ]
 
 # =============================================================================
