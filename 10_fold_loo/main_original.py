@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 # from modules.shell_evaluation import run_interval_selection_and_modeling
 
 
-import os
+
 from modules.ten_fold_loo_shell_evaluation import leave_one_out_test_evaluation
 
 
@@ -878,6 +878,8 @@ y_label_df = load_metadata(meta_data_directory)
 # )
 # =============================================================================
 # =============================================================================
+from itertools import product
+
 # Xg-Boost Param Grid
 # =============================================================================
 # 1) Base (best n_estimators / lr ranges)
@@ -923,15 +925,16 @@ for ne, lr, md, mcw, ga, ss, cs, ra, rl in product(
         'colsample_bytree': cs,
         'reg_alpha':        ra,
         'reg_lambda':       rl,
+        'n_jobs':          -1,   # use all CPU cores
     })
-# Right after your `for … in product(…)` loop
+
 print("🔍 xgb_grid size:", len(xgb_grid))
-# optionally peek at the first few combos
 print("First 2 entries:", xgb_grid[:2])
+
 
 # 10-Fold Leave-One-Out Blinded Test Evaluation
 # =============================================================================
-import os
+
 from modules.ten_fold_loo_shell_evaluation import leave_one_out_test_evaluation
 from modules.interval_shell import DEFAULT_HYPERPARAMETERS
 
