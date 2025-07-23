@@ -877,7 +877,6 @@ y_label_df = load_metadata(meta_data_directory)
 #     ]
 # )
 # =============================================================================
-# =============================================================================
 from itertools import product
 
 # Xg-Boost Param Grid
@@ -925,7 +924,15 @@ for ne, lr, md, mcw, ga, ss, cs, ra, rl in product(
         'colsample_bytree': cs,
         'reg_alpha':        ra,
         'reg_lambda':       rl,
-        'n_jobs':          -1,   # use all CPU cores
+        'n_jobs':          -1,   # will be overwritten below
+    })
+
+# Use GPU and single-thread CPU for each trial
+for params in xgb_grid:
+    params.update({
+        'n_jobs':       1,
+        'tree_method':  'gpu_hist',
+        'predictor':    'gpu_predictor',
     })
 
 print("🔍 xgb_grid size:", len(xgb_grid))

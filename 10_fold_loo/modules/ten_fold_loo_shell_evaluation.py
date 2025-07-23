@@ -14,7 +14,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.model_selection import GroupKFold
 from sklearn.metrics import mean_squared_error, r2_score
-
+from joblib import Parallel, delayed   
 from modules.interval_shell import get_model_by_name
 from modules.data_loader import load_data, load_metadata
 from modules.preprocessing import Preprocessing
@@ -76,71 +76,40 @@ def leave_one_out_test_evaluation(
                 # keep everything except IntervalPLS for inner‐loop & final unsupervised steps
                 other_methods = [m for m in prep_chain if m != 'IntervalPLS']
 
-
-               
-                # Inner CV for hyperparameter tuning
-                best_rmse = np.inf
-                best_hp   = None
-                inner     = GroupKFold(n_splits=5)
-            
-                for hp in hyperparam_grids.get(model_name, []):
+                
+                # ─── Inner CV for hyperparameter tuning (parallelized) ───────────────────────
+                def _evaluate_hp(hp):
                     fold_rmses = []
-            
+                    inner = GroupKFold(n_splits=5)
                     for iti, ito in inner.split(X_raw, y_vals, groups=groups):
-                        # — split into train / val raw spectra & labels —
-                        X_tr_raw = X_raw[iti].T      # shape (n_wavenumbers, n_train_spectra)
-                        X_vl_raw = X_raw[ito].T      # shape (n_wavenumbers, n_val_spectra)
-                        y_tr      = y_vals[iti]      # 1D array, length = train_spectra_count
-                        y_vl      = y_vals[ito]
-            
-                        # — apply just the *other* (unsupervised) preprocessing on the train block —
-                        prep = Preprocessing(X_tr_raw)
-                        Xp_tr = prep.preprocess(other_methods)
-                        
-                        # — apply same unsupervised chain on the val block —
-                        Xp_vl = Preprocessing(X_vl_raw).preprocess(other_methods)
-                                            
-                        # — now *slice* each to the selected intervals from the outer fold —
-                        # (slice rows/features, not columns)
-                        Xp_tr = Xp_tr[sel, :]    # keep only those feature‐rows
-                        Xp_vl = Xp_vl[sel, :]
-                        
-                        # now Xp_tr, Xp_vl are shape (n_selected_wavenumbers, n_spectra)
-                        # transpose back to (n_spectra, n_selected_wavenumbers)
-                        Xp_tr = Xp_tr.T
-                        Xp_vl = Xp_vl.T
-
-
-
-            
-                        # — ensure float32 + contiguous for features —
-                        X_tr32 = np.ascontiguousarray(Xp_tr, dtype=np.float32)
-                        X_vl32 = np.ascontiguousarray(Xp_vl, dtype=np.float32)
-                        
-                        # — shape y correctly for sipls vs. sklearn models —
-                        if model_name == 'sipls':
-                            # torch_pls wants (n_samples,1)
-                            y_input = y_tr.astype(np.float32).reshape(-1, 1)
-                        else:
-                            # everything else (RF, SVR, XGBoost, etc.) wants (n_samples,)
-                            y_input = y_tr.astype(np.float32)
-                        
-                        # — fit & predict —
-                        mdl = get_model_by_name(model_name, hp)
-                        mdl.fit(X_tr32, y_input)
-                        preds = mdl.predict(X_vl32).flatten()
-                        
-
-            
-                        # — compute sample-level RMSE —
+                        X_tr_raw = X_raw[iti].T
+                        X_vl_raw = X_raw[ito].T
+                        y_tr, y_vl = y_vals[iti], y_vals[ito]
+                
+                        Xp_tr = Preprocessing(X_tr_raw).preprocess(other_methods).T.astype(np.float32)
+                        Xp_vl = Preprocessing(X_vl_raw).preprocess(other_methods).T.astype(np.float32)
+                
+                        Xp_tr, Xp_vl = Xp_tr[:, sel], Xp_vl[:, sel]
+                
+                        mdl   = get_model_by_name(model_name, hp)
+                        mdl.fit(Xp_tr, y_tr.astype(np.float32).ravel())
+                        preds = mdl.predict(Xp_vl).ravel()
+                
                         s_true = y_vl.reshape(-1, 9).mean(axis=1)
                         s_pred = preds.reshape(-1, 9).mean(axis=1)
                         fold_rmses.append(np.sqrt(mean_squared_error(s_true, s_pred)))
-            
-                    avg_rmse = np.mean(fold_rmses)
-                    if avg_rmse < best_rmse:
-                        best_rmse = avg_rmse
-                        best_hp   = hp
+                
+                    return np.mean(fold_rmses), hp
+                
+                # dispatch all HP trials in parallel (one trial per core)
+                hp_results = Parallel(n_jobs=-1, verbose=10)(
+                    delayed(_evaluate_hp)(hp)
+                    for hp in hyperparam_grids.get(model_name, [])
+                )
+                best_rmse, best_hp = min(hp_results, key=lambda x: x[0])
+                # ─── end Inner CV ───────────────────────────────────────────────────────────
+
+
 
 
                 # ─── Retrain on full combined + predict held-out nine spectra ───
