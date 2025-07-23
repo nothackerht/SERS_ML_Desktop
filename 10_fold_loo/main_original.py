@@ -34,6 +34,7 @@ import pandas as pd
 import numpy as np
 import os
 import torch
+from itertools import product
 print("CUDA Available:", torch.cuda.is_available())
 print("Device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU")
 
@@ -877,6 +878,57 @@ y_label_df = load_metadata(meta_data_directory)
 # )
 # =============================================================================
 # =============================================================================
+# Xg-Boost Param Grid
+# =============================================================================
+# 1) Base (best n_estimators / lr ranges)
+base = {
+    'n_estimators':  [100, 200],
+    'learning_rate': [0.05, 0.1],
+}
+
+# 2) Tree complexity
+tree = {
+    'max_depth':        [3, 5, 7],
+    'min_child_weight': [1, 3, 5],
+}
+
+# 3) Subsampling & feature-sampling
+split = {
+    'gamma':            [0, 0.1, 0.2],
+    'subsample':        [0.6, 0.8, 1.0],
+    'colsample_bytree': [0.6, 0.8, 1.0],
+}
+
+# 4) Optional L1/L2
+reg = {
+    'reg_alpha':  [0, 0.1, 1.0],
+    'reg_lambda': [1.0, 1.5, 2.0],
+}
+
+# Build the full XGB grid
+xgb_grid = []
+for ne, lr, md, mcw, ga, ss, cs, ra, rl in product(
+        base['n_estimators'], base['learning_rate'],
+        tree['max_depth'], tree['min_child_weight'],
+        split['gamma'], split['subsample'], split['colsample_bytree'],
+        reg['reg_alpha'], reg['reg_lambda']
+    ):
+    xgb_grid.append({
+        'n_estimators':     ne,
+        'learning_rate':    lr,
+        'max_depth':        md,
+        'min_child_weight': mcw,
+        'gamma':            ga,
+        'subsample':        ss,
+        'colsample_bytree': cs,
+        'reg_alpha':        ra,
+        'reg_lambda':       rl,
+    })
+# Right after your `for … in product(…)` loop
+print("🔍 xgb_grid size:", len(xgb_grid))
+# optionally peek at the first few combos
+print("First 2 entries:", xgb_grid[:2])
+
 # 10-Fold Leave-One-Out Blinded Test Evaluation
 # =============================================================================
 import os
@@ -885,13 +937,13 @@ from modules.interval_shell import DEFAULT_HYPERPARAMETERS
 
 # ── Models to try (include or comment out as you like) ───────────────────────
 model_list = [
-    'sipls',
-    'random_forest',
-    'svr',
+    # 'sipls',
+    # 'random_forest',
+    # 'svr',
     'xgboost',
-    'mlp',
+    # 'mlp',
     'knn',
-    'gpr'
+    # 'gpr'
 ]
 
 # =============================================================================
@@ -910,11 +962,12 @@ hyperparam_grids = {
         {'n_estimators': 100, 'max_depth': None},
         {'n_estimators': 200, 'max_depth': 20},
     ],
-    'xgboost': [
-        {'n_estimators': 100, 'learning_rate': 0.1},
-        {'n_estimators': 200, 'learning_rate': 0.05},
-        {'n_estimators': 300, 'learning_rate': 0.01},
-    ],
+    'xgboost': xgb_grid,
+    #     [
+    #     {'n_estimators': 100, 'learning_rate': 0.1},
+    #     {'n_estimators': 200, 'learning_rate': 0.05},
+    #     {'n_estimators': 300, 'learning_rate': 0.01},
+    # ],
     'svr': [
         {'C': 1.0, 'epsilon': 0.1},
         {'C': 10.0, 'epsilon': 0.1},
@@ -936,6 +989,15 @@ hyperparam_grids = {
         {'alpha': 1e-2},
     ],
 }
+param_grid = {
+    "learning_rate": [0.001, 0.01, 0.1],
+    "num_hidden_layers": [2, 3, 4],
+    "num_neurons_per_layer": [32, 64, 128],
+    "activation_function": ["relu", "tanh", "sigmoid"],
+    "batch_size": [16, 32, 64],
+    "optimizer": ["adam", "sgd"],
+    "dropout_rate": [0.0, 0.2, 0.5]
+}
 
 # ── Preprocessing chains ────────────────────────────────────────────────────
 preprocess_grid = [
@@ -943,10 +1005,13 @@ preprocess_grid = [
     ['EMSC'],
     ['IntervalPLS'],
     ['SNV'],
-    ['Normalization'],
+    ['SNV', 'IntervalPLS'],
     ['Normalization', 'IntervalPLS'],
+    ['IntervalPLS', 'Normalization' ],
     ['Second Derivative'],
     ['EMSC', 'SNV'],
+    ['IntervalPLS','EMSC', 'SNV'],
+    ['EMSC', 'SNV', 'IntervalPLS' ],
     ['SNV', 'Second Derivative']
 ]
 
