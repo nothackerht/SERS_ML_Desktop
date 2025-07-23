@@ -33,13 +33,16 @@ def get_model_by_name(model_name, hyperparams):
         )
     elif model_name == 'xgboost':
         return xgb.XGBRegressor(
-            n_estimators=hyperparams.get('n_estimators', 100),
-            max_depth=hyperparams.get('max_depth', 6),
-            learning_rate=hyperparams.get('learning_rate', 0.1),
-            objective='reg:squarederror',
-            random_state=hyperparams.get('random_state', 42),
-            n_jobs=1  # ← avoid nested parallelism
+            n_estimators   = hyperparams.get('n_estimators', 100),
+            max_depth      = hyperparams.get('max_depth', 6),
+            learning_rate = hyperparams.get('learning_rate', 0.1),
+            objective     = 'reg:squarederror',
+            random_state  = hyperparams.get('random_state', 42),
+            n_jobs        = 1,            # ← single‐threaded so no nested threading
+            tree_method   = 'gpu_hist',   # ← use your GPU
+            predictor     = 'gpu_predictor',
         )
+
 
     elif model_name == 'svr':
         return SVR(
