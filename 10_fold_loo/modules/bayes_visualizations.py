@@ -12,6 +12,8 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from skopt.plots import plot_convergence, plot_evaluations, plot_objective
+import shap
+
 
 # Default output directory
 OUTPUT_DIR = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\bayes_results"
@@ -26,8 +28,13 @@ def plot_convergence_curve(res):
     Plot the optimization convergence (trial vs. CV RMSE).
     """
     _ensure_dir()
-    fig = plot_convergence(res)
-    fig.savefig(os.path.join(OUTPUT_DIR, 'convergence_curve.png'), dpi=300, bbox_inches='tight')
+    ax = plot_convergence(res)
+    fig = ax.figure
+    fig.savefig(
+        os.path.join(OUTPUT_DIR, 'convergence_curve.png'),
+        dpi=300,
+        bbox_inches='tight'
+    )
     plt.close(fig)
 
 
@@ -36,24 +43,29 @@ def plot_evaluations_scatter(res):
     Plot pairwise scatter and marginal distributions of hyperparameters vs. performance.
     """
     _ensure_dir()
-    fig = plot_evaluations(res)
-    fig.savefig(os.path.join(OUTPUT_DIR, 'evaluations_plot.png'), dpi=300, bbox_inches='tight')
+    ax = plot_evaluations(res)
+    fig = ax.figure
+    fig.savefig(
+        os.path.join(OUTPUT_DIR, 'evaluations_plot.png'),
+        dpi=300,
+        bbox_inches='tight'
+    )
     plt.close(fig)
 
 
 def plot_hyperparam_heatmap(res, dim1, dim2, n_samples=100):
     """
     Plot a 2D contour of the objective surface for two hyperparameters.
-
-    Parameters:
-    - res: OptimizeResult from gp_minimize
-    - dim1, dim2: names of two dimensions (strings)
-    - n_samples: resolution per axis
     """
     _ensure_dir()
-    fig = plot_objective(res, dimensions=[dim1, dim2], n_samples=n_samples)
+    ax = plot_objective(res, dimensions=[dim1, dim2], n_samples=n_samples)
+    fig = ax.figure
     fname = f"heatmap_{dim1}_vs_{dim2}.png"
-    fig.savefig(os.path.join(OUTPUT_DIR, fname), dpi=300, bbox_inches='tight')
+    fig.savefig(
+        os.path.join(OUTPUT_DIR, fname),
+        dpi=300,
+        bbox_inches='tight'
+    )
     plt.close(fig)
 
 
