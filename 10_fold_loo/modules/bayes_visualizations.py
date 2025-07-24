@@ -12,21 +12,21 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from skopt.plots import plot_convergence, plot_evaluations, plot_objective
-import shap
 
+# shap is optional
+try:
+    import shap
+except ImportError:
+    shap = None
 
 # Default output directory
 OUTPUT_DIR = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\bayes_results"
 
-
 def _ensure_dir():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-
 def plot_convergence_curve(res):
-    """
-    Plot the optimization convergence (trial vs. CV RMSE).
-    """
+    """Plot the optimization convergence (trial vs. CV RMSE)."""
     _ensure_dir()
     ax = plot_convergence(res)
     fig = ax.figure
@@ -37,11 +37,8 @@ def plot_convergence_curve(res):
     )
     plt.close(fig)
 
-
 def plot_evaluations_scatter(res):
-    """
-    Plot pairwise scatter and marginal distributions of hyperparameters vs. performance.
-    """
+    """Plot pairwise scatter and marginal distributions of hyperparameters vs. performance."""
     _ensure_dir()
     ax = plot_evaluations(res)
     fig = ax.figure
@@ -52,13 +49,17 @@ def plot_evaluations_scatter(res):
     )
     plt.close(fig)
 
-
 def plot_hyperparam_heatmap(res, dim1, dim2, n_samples=100):
     """
     Plot a 2D contour of the objective surface for two hyperparameters.
+    dim1, dim2 should match the .name attributes of your skopt.Space dimensions.
     """
     _ensure_dir()
-    ax = plot_objective(res, dimensions=[dim1, dim2], n_samples=n_samples)
+    # find their indices in the search space
+    names = [d.name for d in res.space.dimensions]
+    idx1 = names.index(dim1)
+    idx2 = names.index(dim2)
+    ax = plot_objective(res, dimensions=(idx1, idx2), n_samples=n_samples)
     fig = ax.figure
     fname = f"heatmap_{dim1}_vs_{dim2}.png"
     fig.savefig(
@@ -68,19 +69,15 @@ def plot_hyperparam_heatmap(res, dim1, dim2, n_samples=100):
     )
     plt.close(fig)
 
-
 def plot_feature_importance(model, top_n=20):
-    """
-    Bar chart of the top_n feature importances by gain.
-    Assumes model is a fitted XGBRegressor.
-    """
+    """Bar chart of the top_n feature importances by gain."""
     _ensure_dir()
     imp = model.get_booster().get_score(importance_type='gain')
     items = sorted(imp.items(), key=lambda x: x[1], reverse=True)[:top_n]
     features, gains = zip(*items)
     y_pos = np.arange(len(features))
 
-    plt.figure(figsize=(8, max(6, 0.3*len(features))))
+    plt.figure(figsize=(8, max(6, 0.3 * len(features))))
     plt.barh(y_pos, gains[::-1])
     plt.yticks(y_pos, [f for f in features[::-1]])
     plt.xlabel("Gain")
@@ -89,11 +86,8 @@ def plot_feature_importance(model, top_n=20):
     plt.savefig(os.path.join(OUTPUT_DIR, 'feature_importance.png'), dpi=300)
     plt.close()
 
-
 def plot_residuals(model, X_test, y_test):
-    """
-    Histogram of residuals on the test set.
-    """
+    """Histogram of residuals on the test set."""
     _ensure_dir()
     y_pred = model.predict(X_test)
     residuals = y_test - y_pred
@@ -107,11 +101,8 @@ def plot_residuals(model, X_test, y_test):
     plt.savefig(os.path.join(OUTPUT_DIR, 'residuals_histogram.png'), dpi=300)
     plt.close()
 
-
 def plot_parity(model, X_test, y_test):
-    """
-    Parity plot (Predicted vs. Actual) with 45-degree line.
-    """
+    """Parity plot (Predicted vs. Actual) with 45-degree line."""
     _ensure_dir()
     y_pred = model.predict(X_test)
     mn, mx = min(y_test.min(), y_pred.min()), max(y_test.max(), y_pred.max())
@@ -126,12 +117,15 @@ def plot_parity(model, X_test, y_test):
     plt.savefig(os.path.join(OUTPUT_DIR, 'parity_plot.png'), dpi=300)
     plt.close()
 
-
 def plot_shap_summary(model, X, feature_names=None):
     """
     SHAP summary plot for tree-based model.
-    Requires shap library.
+    If shap isn't installed, this function will be a no-op.
     """
+    if shap is None:
+        print("🔸 shap not installed; skipping SHAP summary plot.")
+        return
+
     _ensure_dir()
     explainer = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(X)
