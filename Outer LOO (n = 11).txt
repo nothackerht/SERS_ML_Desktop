@@ -1,0 +1,72 @@
+Outer LOO (n = 11)
+
+Loop over your 11 external test samples.
+
+In iteration i, hold sample i out; pool the other 10 externals + 43 training samples → 53 samples × 9 spectra = 477 spectra.
+
+Inner Bayesian‐CV per fold
+
+On those 477 spectra, run a small gp_minimize search over your 9 XGBoost dimensions.
+
+Use 5-fold GroupKFold (group by sample, so 9 spectra per fold) and compute sample-level RMSE by averaging the 9 replicate spectra before scoring.
+
+This returns a fold-specific best hyperparameter tuple for that preprocessing chain.
+
+Fold-specific retrain & predict
+
+Retrain an XGBRegressor on the same 477 spectra using that fold’s best hyperparameters + the chosen preprocessing.
+
+Predict the held-out sample’s 9 spectra → record fold_pred_mean, fold_pred_std, and fold_rmse (against the true sample-level value).
+
+Save fold-specific metrics
+
+For each outer fold i and each preprocessing chain, store:
+
+fold index
+
+preproc chain
+
+best_hp tuple
+
+fold_pred_mean, fold_pred_std, fold_rmse
+
+Hyperparameter mode aggregation
+
+Collect the 11 fold-specific best_hp tuples.
+
+Compute the mode (most common) tuple → your single “global” hyperparameter configuration.
+
+Global retrain per fold & predict
+
+Now, for each of the 11 folds again:
+
+Retrain an XGBRegressor on that fold’s same 477-spectra pool, but this time using the mode hyperparameters + the same preprocessing.
+
+Predict the held-out sample’s 9 spectra → record global_pred_mean, global_pred_std, global_rmse.
+
+Save global metrics
+
+For each fold i and chain, store the global predictions/metrics alongside the fold-specific ones.
+
+Comparison report
+
+Merge fold-specific vs. global metrics into one table (e.g. Excel).
+
+You now have, for each fold:
+
+Fold-specific RMSE (best_hp tuning)
+
+Global RMSE (mode_hp applied)
+
+Calculate and report the average improvement (or degradation) when each fold could tune versus when you forced a single global model.
+
+Parity plots
+
+Generate parity plots (true vs. predicted means) for:
+
+Each fold’s fold-specific predictions (optional)
+
+The global predictions across all 11 samples
+
+These visually show how well the “global” mode_hyperparameter model did versus the true values.
+
