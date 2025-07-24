@@ -882,30 +882,52 @@ from itertools import product
 # Xg-Boost Param Grid
 # =============================================================================
 # 1) Base (best n_estimators / lr ranges)
+# base = {
+#     'n_estimators':  [100, 200],
+#     'learning_rate': [0.05, 0.1],
+# }
+
+# # 2) Tree complexity
+# tree = {
+#     'max_depth':        [3, 5, 7],
+#     'min_child_weight': [1, 3, 5],
+# }
+
+# # 3) Subsampling & feature-sampling
+# split = {
+#     'gamma':            [0, 0.1, 0.2],
+#     'subsample':        [0.6, 0.8, 1.0],
+#     'colsample_bytree': [0.6, 0.8, 1.0],
+# }
+
+# # 4) Optional L1/L2
+# reg = {
+#     'reg_alpha':  [0, 0.1, 1.0],
+#     'reg_lambda': [1.0, 1.5, 2.0],
+# }
 base = {
-    'n_estimators':  [100, 200],
-    'learning_rate': [0.05, 0.1],
+    'n_estimators':  [100],
+    'learning_rate': [0.05],
 }
 
 # 2) Tree complexity
 tree = {
-    'max_depth':        [3, 5, 7],
-    'min_child_weight': [1, 3, 5],
+    'max_depth':        [3],
+    'min_child_weight': [1,],
 }
 
 # 3) Subsampling & feature-sampling
 split = {
-    'gamma':            [0, 0.1, 0.2],
-    'subsample':        [0.6, 0.8, 1.0],
-    'colsample_bytree': [0.6, 0.8, 1.0],
+    'gamma':            [0,],
+    'subsample':        [0.6],
+    'colsample_bytree': [0.6],
 }
 
 # 4) Optional L1/L2
 reg = {
-    'reg_alpha':  [0, 0.1, 1.0],
-    'reg_lambda': [1.0, 1.5, 2.0],
+    'reg_alpha':  [0,],
+    'reg_lambda': [1.0],
 }
-
 # Build the full XGB grid
 xgb_grid = []
 for ne, lr, md, mcw, ga, ss, cs, ra, rl in product(
