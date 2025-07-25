@@ -24,6 +24,7 @@ from sklearn.model_selection import GroupKFold
 from sklearn.metrics import mean_squared_error
 from collections import Counter
 from xgboost import XGBRegressor
+import modules.bayes_visualizations as bvvis
 
 from modules.data_loader   import load_data, load_metadata
 from modules.preprocessing import Preprocessing
@@ -92,6 +93,11 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
 
     # ─── Outer LOO ─────────────────────────────────────────────────────────────
     for i in range(n_ex):
+        # ─── NEW: isolate per‐fold folder ────────────────────────────────────
+        fold_dir = os.path.join(bvvis.OUTPUT_DIR, f"fold_{i}")
+        os.makedirs(fold_dir, exist_ok=True)
+        bvvis.OUTPUT_DIR = fold_dir
+        
         # hold‐out sample i
         hold_mask = (ext_idx == i)           # boolean mask on raw_ex columns
         X_hold    = raw_ex[:, hold_mask]     # (n_features, 9)
@@ -250,7 +256,9 @@ if __name__ == '__main__':
         external_test_spectra_path,
         external_test_metadata_path
     )
-
+    # **HERE**: Make a shortcut to the viz module and define base_out
+    import modules.bayes_visualizations as bvvis
+    base_out = output_dir
     # checkpoint bookkeeping
     chkpt_file = os.path.join(output_dir, 'completed_chains.pkl')
     if os.path.exists(chkpt_file):
@@ -261,29 +269,41 @@ if __name__ == '__main__':
     all_folds  = []
     all_global = []
 
+    base_out = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\bayes_results"
+    from modules import bayes_visualizations
+    
     for chain in preprocess_grid:
         key = '+'.join(chain) if chain else 'none'
+    
+        # 1) make a subfolder for this preprocessing chain
+        chain_out = os.path.join(base_out, key)
+        os.makedirs(chain_out, exist_ok=True)
+    
+        # 2) redirect all of bayes_visualizations into that folder
+        bvvis.OUTPUT_DIR = chain_out
+    
+        # 3) now you can do your “skip if already done” logic
         if key in completed:
             print(f"→ skipping {key}, already done")
             continue
-
+    
         print(f"→ running chain {key} …")
         f_rec, g_rec = run_outer_loo(
             raw_tr, y_tr_meta,
             raw_ex, y_ex_meta,
             chain, n_calls=25
         )
-
-        # immediately pickle this chain's results
-        chain_chkpt = os.path.join(output_dir, f"results_{key}.pkl")
-        pickle.dump({'folds': f_rec, 'global': g_rec}, open(chain_chkpt, 'wb'))
-
-        # mark done and save checkpoint
+    
+        # 4) pickle & mark done
+        pickle.dump({'folds': f_rec, 'global': g_rec},
+                    open(os.path.join(chain_out, f"results_{key}.pkl"), 'wb'))
         completed.append(key)
         pickle.dump(completed, open(chkpt_file, 'wb'))
-
+    
         all_folds .extend(f_rec)
         all_global.extend(g_rec)
+
+       
 
     # build and save final table
     df_f   = pd.DataFrame(all_folds)
