@@ -110,7 +110,8 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         grp_ex = len(y_tr_meta) + ext_idx[rem_mask]
         groups = np.concatenate([grp_tr, grp_ex])
 
-        prep = Preprocessing(X_pool)
+        prep = Preprocessing(X_pool, ipls_threshold=0.2)
+
 
         # ─── Inner Bayesian CV objective ────────────────────────────────────────
         @use_named_args(xgb_space)
@@ -174,7 +175,7 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         plot_shap_summary       (mdl_final, X_full)
 
         # ─── fold-specific prediction ─────────────────────────────────
-        Xh    = Preprocessing(X_hold).preprocess(chain, y=[y_hold]).T
+        Xh = Preprocessing(X_hold, ipls_threshold=0.2).preprocess(chain, y=[y_hold]).T
 
         preds = mdl_final.predict(Xh)
         fold_records.append({
@@ -205,7 +206,7 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         grp_ex = len(y_tr_meta) + ext_idx[rem_mask]
         groups = np.concatenate([grp_tr, grp_ex])
 
-        prep = Preprocessing(X_pool)
+        prep = Preprocessing(X_pool, ipls_threshold=0.2)
         mdl_g = XGBRegressor(
             **dict(zip([d.name for d in xgb_space], mode_hp)),
             tree_method = 'hist',
@@ -215,7 +216,7 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         X_full = prep.preprocess(chain, y=y_pool).T
         mdl_g.fit(X_full, y_pool)
 
-        Xh    = Preprocessing(X_hold).preprocess(chain, y=[y_hold]).T
+        Xh = Preprocessing(X_hold, ipls_threshold=0.2).preprocess(chain, y=[y_hold]).T
 
         preds = mdl_g.predict(Xh)
         global_records.append({

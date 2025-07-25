@@ -7,14 +7,14 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 
 class Preprocessing:
-    def __init__(self, spectra):
+    def __init__(self, spectra, ipls_threshold: float = 0.0):
         """
-        Initialize the Preprocessing class with the spectra.
-
-        Parameters:
-        spectra (np.ndarray): The spectra to preprocess, where rows represent wavelengths and columns represent different spectra.
+        Initialize with:
+          spectra          : (n_wavenumbers × n_spectra) raw matrix
+          ipls_threshold   : minimum R² to keep an interval in IntervalPLS
         """
         self.spectra = spectra
+        self.ipls_threshold = ipls_threshold
 
     def emsc(self, spectra, reference=None):
         """Extended Multiplicative Signal Correction (EMSC)."""
@@ -134,13 +134,9 @@ class Preprocessing:
     def preprocess(self, methods, y=None):
         """
         Apply the specified preprocessing methods to the spectra.
-
-        Parameters:
-        methods (list): A list of preprocessing methods to apply, in order.
-        y (np.ndarray, optional): Target array needed for "IntervalPLS" selection.
-
-        Returns:
-        np.ndarray: The preprocessed spectra.
+        
+        methods: list of strings, e.g. ['SNV','IntervalPLS']
+        y      : sample-level targets (needed by IntervalPLS)
         """
         spectra = self.spectra.copy()
         for method in methods:
@@ -155,7 +151,7 @@ class Preprocessing:
             elif method == 'IntervalPLS':
                 if y is None:
                     raise ValueError("`y` must be provided for IntervalPLS selection")
-                # transpose to (n_samples, n_wavenumbers)
+                # transpose to (n_samples, n_features)
                 X = spectra.T
                 sel = self.select_intervals_by_pls_r2(
                     X,
@@ -163,9 +159,9 @@ class Preprocessing:
                     n_intervals=150,
                     n_components=2,
                     cv_folds=5,
-                    threshold=0.0
+                    threshold=self.ipls_threshold   # <-- use the user-supplied threshold
                 )
-                # keep only selected wavenumbers (rows)
+                # reduce spectra down to only the selected wavenumbers
                 spectra = spectra[sel, :]
             else:
                 raise ValueError(f"Unknown preprocessing method: {method}")
