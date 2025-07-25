@@ -13,6 +13,7 @@ Implements:
 7) Parity plots for global predictions
 Saves results to Excel/CSV and PNGs via bayes_visualizations.
 """
+import pickle
 import os
 import numpy as np
 import torch
@@ -52,27 +53,28 @@ pos = 'results'
 
 # Load external (raw‐replicate) spectra for 43 train + 11 test
 def load_external(train_dir, train_meta, test_dir, test_meta):
-    # raw_tr: (n_features, 9×43)=387 spectra, plus filenames fn_tr
-    _, _, raw_tr, fn_tr = load_data(
+    # raw_tr: (n_features, 9×43)=387 spectra
+    _, _, raw_tr, _ = load_data(
         train_dir,
         metadata_path=train_meta,
         return_filenames=True
     )
     y_tr_meta = load_metadata(train_meta)['target_SI'].values
 
-    # raw_ex: (n_features, 9×11)=99 spectra, plus filenames fn_ex
-    _, _, raw_ex, fn_ex = load_data(
+    # raw_ex: (n_features, 9×11)=99 spectra
+    _, _, raw_ex, _ = load_data(
         test_dir,
         metadata_path=test_meta,
         return_filenames=True
     )
     y_ex_meta = load_metadata(test_meta)['target_SI'].values
 
-    return raw_tr, y_tr_meta, fn_tr, raw_ex, y_ex_meta, fn_ex
+    return raw_tr, y_tr_meta, raw_ex, y_ex_meta
 
 
 
-def run_outer_loo(raw_tr, y_tr_meta, fn_tr, raw_ex, y_ex_meta, fn_ex, chain, n_calls=25):
+
+def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
     # number of external samples = total spectra / 9
     n_ex = raw_ex.shape[1] // 9
 
@@ -229,7 +231,8 @@ def run_outer_loo(raw_tr, y_tr_meta, fn_tr, raw_ex, y_ex_meta, fn_ex, chain, n_c
 
 
 
-# Main driver
+# … (your run_outer_loo and load_external definitions above) …
+
 if __name__ == '__main__':
     # ── Set your new data locations here ────────────────────────────────────────
     data_directory              = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data"
@@ -237,47 +240,60 @@ if __name__ == '__main__':
     external_test_spectra_path  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data_test_updated"
     external_test_metadata_path = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata_test_updated.csv"
     output_dir                  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\bayes_results"
+    os.makedirs(output_dir, exist_ok=True)
 
     # Load raw replicate spectra + per-sample metadata
-    raw_tr, y_tr_meta, fn_tr, raw_ex, y_ex_meta, fn_ex = load_external(
+    raw_tr, y_tr_meta, raw_ex, y_ex_meta = load_external(
         data_directory,
         meta_data_directory,
         external_test_spectra_path,
         external_test_metadata_path
     )
 
-    # ── Main driver continued ─────────────────────────────────────────────────
+    # checkpoint bookkeeping
+    chkpt_file = os.path.join(output_dir, 'completed_chains.pkl')
+    if os.path.exists(chkpt_file):
+        completed = pickle.load(open(chkpt_file, 'rb'))
+    else:
+        completed = []
 
     all_folds  = []
     all_global = []
 
-    # for each preprocessing chain, run outer LOO + collect fold-specific & global records
     for chain in preprocess_grid:
+        key = '+'.join(chain) if chain else 'none'
+        if key in completed:
+            print(f"→ skipping {key}, already done")
+            continue
+
+        print(f"→ running chain {key} …")
         f_rec, g_rec = run_outer_loo(
-            raw_tr,
-            y_tr_meta,
-            fn_tr,
-            raw_ex,
-            y_ex_meta,
-            fn_ex,
-            chain,
-            n_calls=25
+            raw_tr, y_tr_meta,
+            raw_ex, y_ex_meta,
+            chain, n_calls=25
         )
+
+        # immediately pickle this chain's results
+        chain_chkpt = os.path.join(output_dir, f"results_{key}.pkl")
+        pickle.dump({'folds': f_rec, 'global': g_rec}, open(chain_chkpt, 'wb'))
+
+        # mark done and save checkpoint
+        completed.append(key)
+        pickle.dump(completed, open(chkpt_file, 'wb'))
+
         all_folds .extend(f_rec)
         all_global.extend(g_rec)
 
-    # build and save results
+    # build and save final table
     df_f   = pd.DataFrame(all_folds)
     df_g   = pd.DataFrame(all_global)
     df_both = df_f.merge(df_g, on=['fold','preproc'])
-    os.makedirs(output_dir, exist_ok=True)
     df_both.to_excel(os.path.join(output_dir, 'loo_bayes_comparison.xlsx'), index=False)
 
-
-    # Parity plot for the global (mode-HP) model
+    # final parity plot
     y_true = df_both['fold'].apply(lambda i: y_ex_meta[i]).values
     y_pred = df_both['global_pred_mean'].values
-    bv_plot_parity(y_true, y_pred)
+    bv_plot_parity(None, y_true, y_pred)
 
     print("✅ Saved comparison results to", output_dir)
 
