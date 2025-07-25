@@ -172,7 +172,8 @@ def run_outer_loo(raw_tr, y_tr_meta, fn_tr, raw_ex, y_ex_meta, fn_ex, chain, n_c
         plot_shap_summary       (mdl_final, X_full)
 
         # ─── fold-specific prediction ─────────────────────────────────
-        Xh    = Preprocessing(X_hold).preprocess(chain).T
+        Xh    = Preprocessing(X_hold).preprocess(chain, y=[y_hold]).T
+
         preds = mdl_final.predict(Xh)
         fold_records.append({
             'fold':           i,
@@ -212,7 +213,8 @@ def run_outer_loo(raw_tr, y_tr_meta, fn_tr, raw_ex, y_ex_meta, fn_ex, chain, n_c
         X_full = prep.preprocess(chain, y=y_pool).T
         mdl_g.fit(X_full, y_pool)
 
-        Xh    = Preprocessing(X_hold).preprocess(chain).T
+        Xh    = Preprocessing(X_hold).preprocess(chain, y=[y_hold]).T
+
         preds = mdl_g.predict(Xh)
         global_records.append({
             'fold':            i,
