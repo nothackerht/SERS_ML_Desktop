@@ -242,12 +242,19 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         X_full = prep.preprocess(chain, y=y_pool).T
         mdl_g.fit(X_full, y_pool)
 
-        # ─── apply the same IntervalPLS selection to the hold-out ───────────
-        if sel is not None:
-            Xh = X_hold[sel, :].T
+        # find this fold's selected intervals
+        fold_sel = None
+        for rec in fold_records:
+            if rec['fold'] == i:
+                fold_sel = rec.get('intervals', None)
+                break
+        
+        # slice X_hold accordingly
+        if fold_sel is not None:
+            Xh = X_hold[fold_sel, :].T
         else:
-            Xh = Preprocessing(X_hold, ipls_threshold=0.2) \
-                    .preprocess(chain, y=[y_hold]).T
+            Xh = Preprocessing(X_hold, ipls_threshold=0.2).preprocess(chain, y=[y_hold]).T
+
 
 
         preds = mdl_g.predict(Xh)
