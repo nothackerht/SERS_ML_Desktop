@@ -239,15 +239,24 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
                 fold_sel = rec.get('intervals', None)
                 break
     
+
         # Apply preprocessing using correct fold_sel consistently
         if fold_sel is not None:
             X_train_final = X_pool[fold_sel, :].T
             X_hold_final  = X_hold[fold_sel, :].T
         else:
+            # Only preprocess fully if IntervalPLS wasn't part of the chain
             prep = Preprocessing(X_pool, ipls_threshold=0.2)
             X_train_final = prep.preprocess(chain, y=y_pool).T
             X_hold_final  = Preprocessing(X_hold, ipls_threshold=0.2).preprocess(chain, y=[y_hold]).T
-    
+
+
+        # 🔥 Add this assert RIGHT HERE to catch shape mismatch
+        assert X_train_final.shape[1] == X_hold_final.shape[1], (
+            f"🔥 Shape mismatch in fold {i}: "
+            f"train shape = {X_train_final.shape}, test shape = {X_hold_final.shape}, "
+            f"intervals used = {fold_sel is not None}"
+        )
         # Fit and predict using mode_hp
         mdl_g = XGBRegressor(
             **dict(zip([d.name for d in xgb_space], mode_hp)),
