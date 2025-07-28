@@ -222,46 +222,42 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         hold_mask = (ext_idx == i)
         X_hold    = raw_ex[:, hold_mask]
         y_hold    = y_ex_meta[i]
-
+    
         rem_mask = ~hold_mask
         X_rem    = raw_ex[:, rem_mask]
         X_pool   = np.hstack([raw_tr, X_rem])
         y_pool   = np.concatenate([y_tr, y_ex[rem_mask]])
-
+    
         grp_tr = np.repeat(np.arange(len(y_tr_meta)), 9)
         grp_ex = len(y_tr_meta) + ext_idx[rem_mask]
         groups = np.concatenate([grp_tr, grp_ex])
-
+    
         # 🔁 Look up this fold's selected intervals
         fold_sel = None
         for rec in fold_records:
             if rec['fold'] == i:
                 fold_sel = rec.get('intervals', None)
                 break
-
-        # Handle preprocessing or slicing depending on whether intervals were selected
+    
+        # Apply preprocessing using correct fold_sel consistently
         if fold_sel is not None:
-            X_full = X_pool[fold_sel, :].T
+            X_train_final = X_pool[fold_sel, :].T
+            X_hold_final  = X_hold[fold_sel, :].T
         else:
             prep = Preprocessing(X_pool, ipls_threshold=0.2)
-            X_full = prep.preprocess(chain, y=y_pool).T
-
-        # Fit global model with mode hyperparameters
+            X_train_final = prep.preprocess(chain, y=y_pool).T
+            X_hold_final  = Preprocessing(X_hold, ipls_threshold=0.2).preprocess(chain, y=[y_hold]).T
+    
+        # Fit and predict using mode_hp
         mdl_g = XGBRegressor(
             **dict(zip([d.name for d in xgb_space], mode_hp)),
             tree_method = 'hist',
             device      = 'cuda' if torch.cuda.is_available() else 'cpu',
             random_state=42
         )
-        mdl_g.fit(X_full, y_pool)
-
-        # Slice hold-out sample for prediction using same interval
-        if fold_sel is not None:
-            Xh = X_hold[fold_sel, :].T
-        else:
-            Xh = Preprocessing(X_hold, ipls_threshold=0.2).preprocess(chain, y=[y_hold]).T
-
-        preds = mdl_g.predict(Xh)
+        mdl_g.fit(X_train_final, y_pool)
+        preds = mdl_g.predict(X_hold_final)
+    
         global_records.append({
             'fold':             i,
             'preproc':          '+'.join(chain),
@@ -270,6 +266,7 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
             'global_pred_std':  preds.std(),
             'global_rmse':      np.sqrt(mean_squared_error([y_hold], [preds.mean()]))
         })
+
 
     return fold_records, global_records
 
