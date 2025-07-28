@@ -117,6 +117,19 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         groups = np.concatenate([grp_tr, grp_ex])
 
         prep = Preprocessing(X_pool, ipls_threshold=0.2)
+        # ─── if IntervalPLS in this chain, select intervals once on the pool ───
+        sel = None
+        if 'IntervalPLS' in chain:
+            # X_pool.T: (n_samples, n_features), y_pool: (n_samples,)
+            sel = prep.select_intervals_by_pls_r2(
+                X_pool.T,
+                y_pool,
+                n_intervals=150,
+                n_components=2,
+                cv_folds=5,
+                threshold=prep.ipls_threshold
+            )
+
 
 
         # ─── Inner Bayesian CV objective ────────────────────────────────────────
@@ -181,7 +194,13 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         plot_shap_summary       (mdl_final, X_full)
 
         # ─── fold-specific prediction ─────────────────────────────────
-        Xh = Preprocessing(X_hold, ipls_threshold=0.2).preprocess(chain, y=[y_hold]).T
+        # ─── apply the same IntervalPLS selection to the hold-out ───────────
+        if sel is not None:
+            Xh = X_hold[sel, :].T
+        else:
+            Xh = Preprocessing(X_hold, ipls_threshold=0.2) \
+                    .preprocess(chain, y=[y_hold]).T
+
 
         preds = mdl_final.predict(Xh)
         fold_records.append({
@@ -222,7 +241,13 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         X_full = prep.preprocess(chain, y=y_pool).T
         mdl_g.fit(X_full, y_pool)
 
-        Xh = Preprocessing(X_hold, ipls_threshold=0.2).preprocess(chain, y=[y_hold]).T
+        # ─── apply the same IntervalPLS selection to the hold-out ───────────
+        if sel is not None:
+            Xh = X_hold[sel, :].T
+        else:
+            Xh = Preprocessing(X_hold, ipls_threshold=0.2) \
+                    .preprocess(chain, y=[y_hold]).T
+
 
         preds = mdl_g.predict(Xh)
         global_records.append({
