@@ -147,6 +147,11 @@ class Preprocessing:
         methods: list of strings, e.g. ['SNV','IntervalPLS']
         y      : sample-level targets (needed by IntervalPLS)
         """
+        # ─── NEW: coerce y into an np.ndarray if it isn’t one ──────────
+        if y is not None and not isinstance(y, np.ndarray):
+            y = np.asarray(y)
+        # ────────────────────────────────────────────────────────────────
+
         spectra = self.spectra.copy()
         for method in methods:
             if method == 'EMSC':
@@ -168,10 +173,10 @@ class Preprocessing:
                     n_intervals=150,
                     n_components=2,
                     cv_folds=5,
-                    threshold=self.ipls_threshold   # <-- use the user-supplied threshold
+                    threshold=self.ipls_threshold
                 )
-                # reduce spectra down to only the selected wavenumbers
                 spectra = spectra[sel, :]
             else:
                 raise ValueError(f"Unknown preprocessing method: {method}")
         return spectra
+

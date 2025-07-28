@@ -10,7 +10,9 @@ and unpacks the chosen hyperparameters for each fold and global retrain.
 import os
 import pickle
 import pandas as pd
-
+with open(r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\bayes_results\completed_chains.pkl", "rb") as f:
+    done = pickle.load(f)
+print("Chains already done:", done)
 # adjust this to wherever your bayes_results lives
 BASE = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\bayes_results"
 
