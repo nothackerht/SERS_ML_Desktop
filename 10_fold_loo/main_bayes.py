@@ -232,44 +232,48 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         grp_ex = len(y_tr_meta) + ext_idx[rem_mask]
         groups = np.concatenate([grp_tr, grp_ex])
 
-        prep = Preprocessing(X_pool, ipls_threshold=0.2)
+        # 🔁 Look up this fold's selected intervals
+        fold_sel = None
+        for rec in fold_records:
+            if rec['fold'] == i:
+                fold_sel = rec.get('intervals', None)
+                break
+
+        # Handle preprocessing or slicing depending on whether intervals were selected
+        if fold_sel is not None:
+            X_full = X_pool[fold_sel, :].T
+        else:
+            prep = Preprocessing(X_pool, ipls_threshold=0.2)
+            X_full = prep.preprocess(chain, y=y_pool).T
+
+        # Fit global model with mode hyperparameters
         mdl_g = XGBRegressor(
             **dict(zip([d.name for d in xgb_space], mode_hp)),
             tree_method = 'hist',
             device      = 'cuda' if torch.cuda.is_available() else 'cpu',
             random_state=42
         )
-        X_full = prep.preprocess(chain, y=y_pool).T
         mdl_g.fit(X_full, y_pool)
 
-        # find this fold's selected intervals
-        fold_sel = None
-        for rec in fold_records:
-            if rec['fold'] == i:
-                fold_sel = rec.get('intervals', None)
-                break
-        
-        # slice X_hold accordingly
+        # Slice hold-out sample for prediction using same interval
         if fold_sel is not None:
             Xh = X_hold[fold_sel, :].T
         else:
             Xh = Preprocessing(X_hold, ipls_threshold=0.2).preprocess(chain, y=[y_hold]).T
 
-
-
         preds = mdl_g.predict(Xh)
         global_records.append({
-            'fold':            i,
-            'preproc':        '+'.join(chain),
-            'mode_hp':         mode_hp,
+            'fold':             i,
+            'preproc':          '+'.join(chain),
+            'mode_hp':          mode_hp,
             'global_pred_mean': preds.mean(),
             'global_pred_std':  preds.std(),
-            'global_rmse':     np.sqrt(mean_squared_error([y_hold], [preds.mean()]))
+            'global_rmse':      np.sqrt(mean_squared_error([y_hold], [preds.mean()]))
         })
 
     return fold_records, global_records
 
-
+    
 
 # … (your run_outer_loo and load_external definitions above) …
 
