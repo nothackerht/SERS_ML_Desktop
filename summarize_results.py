@@ -41,7 +41,37 @@ for chain_dir in os.listdir(BASE):
 df_all_folds  = pd.concat(all_folds,  ignore_index=True)
 df_all_global = pd.concat(all_global, ignore_index=True)
 
-# save to CSV or inspect in pandas
+# ─── NEW: unpack the 9‐tuples into their own columns ────────────────────────
+param_names = [
+    "n_estimators",
+    "learning_rate",
+    "max_depth",
+    "min_child_weight",
+    "gamma",
+    "subsample",
+    "colsample_bytree",
+    "reg_alpha",
+    "reg_lambda",
+]
+
+# ensemble‐fold hyperparams from best_hp
+df_all_folds[param_names] = pd.DataFrame(
+    df_all_folds["best_hp"].tolist(),
+    index=df_all_folds.index
+)
+
+# global‐retrain hyperparams from mode_hp
+df_all_global[param_names] = pd.DataFrame(
+    df_all_global["mode_hp"].tolist(),
+    index=df_all_global.index
+)
+# ────────────────────────────────────────────────────────────────────────────
+
+# save to CSV (with hyperparams included)
+df_all_folds .to_csv("all_chains_fold_results_with_hp.csv",  index=False)
+df_all_global.to_csv("all_chains_global_results_with_hp.csv", index=False)
+
+# also your original CSVs if you like
 df_all_folds .to_csv("all_chains_fold_results.csv",  index=False)
 df_all_global.to_csv("all_chains_global_results.csv", index=False)
 
@@ -50,3 +80,12 @@ print(df_all_folds .groupby("chain")["fold_rmse"].mean().sort_values())
 
 print("\nGlobal-HP (per-fold) summary by chain:")
 print(df_all_global.groupby("chain")["global_rmse"].mean().sort_values())
+
+# ─── Quick summaries of the hyperparameters themselves ──────────────────────
+print("\nMost‐common global hyperparams per chain:")
+for chain, grp in df_all_global.groupby("chain"):
+    mode_hp = grp["mode_hp"].mode().iloc[0]
+    print(f"  {chain:20s} → {mode_hp}")
+
+print("\nAverage learning_rate by chain (global retrain):")
+print(df_all_global.groupby("chain")["learning_rate"].mean().sort_values())
