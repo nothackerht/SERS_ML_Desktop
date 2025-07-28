@@ -7,14 +7,23 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 
 class Preprocessing:
-    def __init__(self, spectra, ipls_threshold: float = 0.0):
+    def __init__(self, spectra: np.ndarray, ipls_threshold: float = 0.0):
         """
-        Initialize with:
-          spectra          : (n_wavenumbers × n_spectra) raw matrix
-          ipls_threshold   : minimum R² to keep an interval in IntervalPLS
+        Initialize the Preprocessing pipeline.
+
+        Parameters:
+        -----------
+        spectra : np.ndarray of shape (n_wavenumbers, n_spectra)
+            Your raw spectra matrix (each column is one spectrum).
+
+        ipls_threshold : float, default=0.0
+            Minimum cross-validated R² to keep an interval in IntervalPLS.
         """
-        self.spectra = spectra
+        # ensure we’re working with a proper numpy array
+        self.spectra = np.asarray(spectra)
+        # store the user’s IntervalPLS R² cutoff
         self.ipls_threshold = ipls_threshold
+
 
     def emsc(self, spectra, reference=None):
         """Extended Multiplicative Signal Correction (EMSC)."""
