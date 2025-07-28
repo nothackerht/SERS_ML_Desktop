@@ -3,12 +3,12 @@
 Created on Mon Jul 28 12:18:20 2025
 
 @author: spect
-"""
 
-import glob
+This script aggregates the per-chain results saved in results_{chain}.pkl
+and unpacks the chosen hyperparameters for each fold and global retrain.
+"""
 import os
 import pickle
-
 import pandas as pd
 
 # adjust this to wherever your bayes_results lives
@@ -41,7 +41,7 @@ for chain_dir in os.listdir(BASE):
 df_all_folds  = pd.concat(all_folds,  ignore_index=True)
 df_all_global = pd.concat(all_global, ignore_index=True)
 
-# ─── NEW: unpack the 9‐tuples into their own columns ────────────────────────
+# ─── unpack the 9‐tuples into named hyperparameter columns ───────────────
 param_names = [
     "n_estimators",
     "learning_rate",
@@ -55,16 +55,18 @@ param_names = [
 ]
 
 # ensemble‐fold hyperparams from best_hp
-df_all_folds[param_names] = pd.DataFrame(
-    df_all_folds["best_hp"].tolist(),
-    index=df_all_folds.index
-)
+if "best_hp" in df_all_folds.columns:
+    df_all_folds[param_names] = pd.DataFrame(
+        df_all_folds["best_hp"].tolist(),
+        index=df_all_folds.index
+    )
 
 # global‐retrain hyperparams from mode_hp
-df_all_global[param_names] = pd.DataFrame(
-    df_all_global["mode_hp"].tolist(),
-    index=df_all_global.index
-)
+if "mode_hp" in df_all_global.columns:
+    df_all_global[param_names] = pd.DataFrame(
+        df_all_global["mode_hp"].tolist(),
+        index=df_all_global.index
+    )
 # ────────────────────────────────────────────────────────────────────────────
 
 # save to CSV (with hyperparams included)
@@ -81,11 +83,18 @@ print(df_all_folds .groupby("chain")["fold_rmse"].mean().sort_values())
 print("\nGlobal-HP (per-fold) summary by chain:")
 print(df_all_global.groupby("chain")["global_rmse"].mean().sort_values())
 
-# ─── Quick summaries of the hyperparameters themselves ──────────────────────
+# ─── Quick summaries of the hyperparameters themselves ────────────────────
+# … everything up to the hyperparam‐printing block stays the same …
+
 print("\nMost‐common global hyperparams per chain:")
 for chain, grp in df_all_global.groupby("chain"):
     mode_hp = grp["mode_hp"].mode().iloc[0]
-    print(f"  {chain:20s} → {mode_hp}")
+    # build a dict of name→value
+    hp_dict = dict(zip(param_names, mode_hp))
+    # nicely format the dict into a single string
+    hp_str = ", ".join(f"{k}={v}" for k, v in hp_dict.items())
+    print(f"  {chain:20s} → {hp_str}")
 
 print("\nAverage learning_rate by chain (global retrain):")
 print(df_all_global.groupby("chain")["learning_rate"].mean().sort_values())
+
