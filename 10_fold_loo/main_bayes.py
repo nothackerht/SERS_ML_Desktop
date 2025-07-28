@@ -207,6 +207,7 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
             'fold':           i,
             'preproc':        '+'.join(chain),
             'best_hp':        best_hp,
+            'intervals':      sel,  # 🔥 store selected interval indices
             'fold_pred_mean': float(np.mean(preds)),
             'fold_pred_std':  float(np.std(preds)),
             'fold_rmse':      float(np.sqrt(mean_squared_error([y_hold], [preds.mean()])))

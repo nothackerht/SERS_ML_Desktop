@@ -17,7 +17,7 @@ from modules.data_loader import load_data, load_metadata
 from modules.plot_spectra import create_plot
 # from modules.analysis_tools import run_analysis, run_ejcr_analysis, create_vip_plot
 # from modules.substrate_evaluation import plot_spectra_with_baseline
-# from modules.classification import Classifier
+from modules.classification import Classifier
 # from modules.SiPLS_Regression import RegressionModel
 from modules.plot_spectra import plot_train_test_spectra
 from modules.plot_spectra import plot_3d_target_metrics
@@ -39,11 +39,17 @@ print("CUDA Available:", torch.cuda.is_available())
 print("Device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU")
 
 # Specify the directory containing the Data and Metadata
-data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data"
-meta_data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata.csv"
+# COMBINED DATA DIRECTORY
+data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\data_combined"
+meta_data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata_combined.csv"
+#REGULAR DATA DIRECTORY
+# data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data"
+# meta_data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata.csv"
 method_data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\method_data.csv"
 
-output_dir = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\10_fold_results"
+output_dir = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Classification_Results"
+os.makedirs(output_dir, exist_ok=True)
+
 fold_log_dir = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\10_fold_results"
 
 
@@ -335,25 +341,25 @@ y_label_df = load_metadata(meta_data_directory)
 # #%% Classification Models
 
 
-# # Initialize the classifier
-# classifier_model = Classifier(all_spectra=all_spectra, y_label_df=y_label_df)
+# Initialize the classifier
+classifier_model = Classifier(all_spectra=all_spectra, y_label_df=y_label_df)
 
-# # Run PLS-DA with LOSOCV and save plots to the output directory
-# roc_auc_plsda, all_y_test_plsda, all_y_pred_proba_plsda = classifier_model.pls_da_losocv(
-#     preprocess_methods=['SNV', 'Normalization'], 
-#     n_components=15, 
-#     save_plots=True, 
-#     output_dir=output_dir
-# )
+# Run PLS-DA with LOSOCV and save plots to the output directory
+roc_auc_plsda, all_y_test_plsda, all_y_pred_proba_plsda = classifier_model.pls_da_losocv(
+    preprocess_methods=['SNV', 'Normalization'], 
+    n_components=15, 
+    save_plots=True, 
+    output_dir=output_dir
+)
 
-# # Perform SVM with LOSOCV and save plots to the output directory
-# roc_auc_svm, all_y_test_svm, all_y_pred_proba_svm = classifier_model.svm_losocv(
-#     preprocess_methods=['SNV'], 
-#     C=1.0, 
-#     kernel='linear', 
-#     save_plots=True, 
-#     output_dir=output_dir
-# )
+# Perform SVM with LOSOCV and save plots to the output directory
+roc_auc_svm, all_y_test_svm, all_y_pred_proba_svm = classifier_model.svm_losocv(
+    preprocess_methods=['SNV'], 
+    C=1.0, 
+    kernel='linear', 
+    save_plots=True, 
+    output_dir=output_dir
+)
 
 
 #%% Regression Models
@@ -875,36 +881,36 @@ y_label_df = load_metadata(meta_data_directory)
 #         # 'knn',           # sklearn.neighbors.KNeighborsRegressor
 #         # 'gpr'            # sklearn.gaussian_process.GaussianProcessRegressor
 #     ]
-# )
-# =============================================================================
-from itertools import product
+# # )
+# # =============================================================================
+# from itertools import product
 
-# Xg-Boost Param Grid
-# =============================================================================
-# 1) Base (best n_estimators / lr ranges)
-base = {
-    'n_estimators':  [100, 200],
-    'learning_rate': [0.05, 0.1],
-}
+# # Xg-Boost Param Grid
+# # =============================================================================
+# # 1) Base (best n_estimators / lr ranges)
+# base = {
+#     'n_estimators':  [100, 200],
+#     'learning_rate': [0.05, 0.1],
+# }
 
-# 2) Tree complexity
-tree = {
-    'max_depth':        [3, 5, 7],
-    'min_child_weight': [1, 3, 5],
-}
+# # 2) Tree complexity
+# tree = {
+#     'max_depth':        [3, 5, 7],
+#     'min_child_weight': [1, 3, 5],
+# }
 
-# 3) Subsampling & feature-sampling
-split = {
-    'gamma':            [0, 0.1, 0.2],
-    'subsample':        [0.6, 0.8, 1.0],
-    'colsample_bytree': [0.6, 0.8, 1.0],
-}
+# # 3) Subsampling & feature-sampling
+# split = {
+#     'gamma':            [0, 0.1, 0.2],
+#     'subsample':        [0.6, 0.8, 1.0],
+#     'colsample_bytree': [0.6, 0.8, 1.0],
+# }
 
-# 4) Optional L1/L2
-reg = {
-    'reg_alpha':  [0, 0.1, 1.0],
-    'reg_lambda': [1.0, 1.5, 2.0],
-}
+# # 4) Optional L1/L2
+# reg = {
+#     'reg_alpha':  [0, 0.1, 1.0],
+#     'reg_lambda': [1.0, 1.5, 2.0],
+# }
 # base = {
 #     'n_estimators':  [100],
 #     'learning_rate': [0.05],
@@ -928,161 +934,161 @@ reg = {
 #     'reg_alpha':  [0,],
 #     'reg_lambda': [1.0],
 # }
-# Build the full XGB grid
-xgb_grid = []
-for ne, lr, md, mcw, ga, ss, cs, ra, rl in product(
-        base['n_estimators'], base['learning_rate'],
-        tree['max_depth'], tree['min_child_weight'],
-        split['gamma'], split['subsample'], split['colsample_bytree'],
-        reg['reg_alpha'], reg['reg_lambda']
-    ):
-    xgb_grid.append({
-        'n_estimators':     ne,
-        'learning_rate':    lr,
-        'max_depth':        md,
-        'min_child_weight': mcw,
-        'gamma':            ga,
-        'subsample':        ss,
-        'colsample_bytree': cs,
-        'reg_alpha':        ra,
-        'reg_lambda':       rl,
-        'n_jobs':          -1,   # will be overwritten below
-    })
+# # Build the full XGB grid
+# xgb_grid = []
+# for ne, lr, md, mcw, ga, ss, cs, ra, rl in product(
+#         base['n_estimators'], base['learning_rate'],
+#         tree['max_depth'], tree['min_child_weight'],
+#         split['gamma'], split['subsample'], split['colsample_bytree'],
+#         reg['reg_alpha'], reg['reg_lambda']
+#     ):
+#     xgb_grid.append({
+#         'n_estimators':     ne,
+#         'learning_rate':    lr,
+#         'max_depth':        md,
+#         'min_child_weight': mcw,
+#         'gamma':            ga,
+#         'subsample':        ss,
+#         'colsample_bytree': cs,
+#         'reg_alpha':        ra,
+#         'reg_lambda':       rl,
+#         'n_jobs':          -1,   # will be overwritten below
+#     })
 
-# Use GPU and single-thread CPU for each trial
-for params in xgb_grid:
-    params.update({
-        'n_jobs':       1,
-        'tree_method':  'gpu_hist',
-        'predictor':    'gpu_predictor',
-    })
+# # Use GPU and single-thread CPU for each trial
+# for params in xgb_grid:
+#     params.update({
+#         'n_jobs':       1,
+#         'tree_method':  'gpu_hist',
+#         'predictor':    'gpu_predictor',
+#     })
 
-print("🔍 xgb_grid size:", len(xgb_grid))
-print("First 2 entries:", xgb_grid[:2])
+# print("🔍 xgb_grid size:", len(xgb_grid))
+# print("First 2 entries:", xgb_grid[:2])
 
 
-# 10-Fold Leave-One-Out Blinded Test Evaluation
-# =============================================================================
+# # 10-Fold Leave-One-Out Blinded Test Evaluation
+# # =============================================================================
 
-from modules.ten_fold_loo_shell_evaluation import leave_one_out_test_evaluation
-from modules.interval_shell import DEFAULT_HYPERPARAMETERS
+# from modules.ten_fold_loo_shell_evaluation import leave_one_out_test_evaluation
+# from modules.interval_shell import DEFAULT_HYPERPARAMETERS
 
-# ── Models to try (include or comment out as you like) ───────────────────────
-model_list = [
-    # 'sipls',
-    # 'random_forest',
-    # 'svr',
-    'xgboost',
-    # 'mlp',
-    # 'knn',
-    # 'gpr'
-]
+# # ── Models to try (include or comment out as you like) ───────────────────────
+# model_list = [
+#     # 'sipls',
+#     # 'random_forest',
+#     # 'svr',
+#     'xgboost',
+#     # 'mlp',
+#     # 'knn',
+#     # 'gpr'
+# ]
 
-# =============================================================================
-# 10-Fold LOO hyperparameter grids (add or comment entries as needed)
-# =============================================================================
-hyperparam_grids = {
-    'sipls': [
-        {'n_components': 2, 'device': 'cpu'},
-        {'n_components': 5, 'device': 'cpu'},
-        {'n_components': 5, 'device': 'cuda'},
-        {'n_components': 8, 'device': 'cpu'},
-        {'n_components': 10, 'device': 'cuda'},
-    ],
-    'random_forest': [
-        {'n_estimators': 50, 'max_depth': 10},
-        {'n_estimators': 100, 'max_depth': None},
-        {'n_estimators': 200, 'max_depth': 20},
-    ],
-    'xgboost': xgb_grid,
-    #     [
-    #     {'n_estimators': 100, 'learning_rate': 0.1},
-    #     {'n_estimators': 200, 'learning_rate': 0.05},
-    #     {'n_estimators': 300, 'learning_rate': 0.01},
-    # ],
-    'svr': [
-        {'C': 1.0, 'epsilon': 0.1},
-        {'C': 10.0, 'epsilon': 0.1},
-        {'C': 10.0, 'epsilon': 0.2},
-    ],
-    'mlp': [
-        {'hidden_layer_sizes': (100,), 'max_iter': 1000},
-        {'hidden_layer_sizes': (200,), 'max_iter': 1000},
-        {'hidden_layer_sizes': (100,100), 'max_iter': 1000},
-    ],
-    'knn': [
-        {'n_neighbors': 3},
-        {'n_neighbors': 5},
-        {'n_neighbors': 7},
-    ],
-    'gpr': [
-        {'alpha': 1e-10},
-        {'alpha': 1e-5},
-        {'alpha': 1e-2},
-    ],
-}
-param_grid = {
-    "learning_rate": [0.001, 0.01, 0.1],
-    "num_hidden_layers": [2, 3, 4],
-    "num_neurons_per_layer": [32, 64, 128],
-    "activation_function": ["relu", "tanh", "sigmoid"],
-    "batch_size": [16, 32, 64],
-    "optimizer": ["adam", "sgd"],
-    "dropout_rate": [0.0, 0.2, 0.5]
-}
+# # =============================================================================
+# # 10-Fold LOO hyperparameter grids (add or comment entries as needed)
+# # =============================================================================
+# hyperparam_grids = {
+#     'sipls': [
+#         {'n_components': 2, 'device': 'cpu'},
+#         {'n_components': 5, 'device': 'cpu'},
+#         {'n_components': 5, 'device': 'cuda'},
+#         {'n_components': 8, 'device': 'cpu'},
+#         {'n_components': 10, 'device': 'cuda'},
+#     ],
+#     'random_forest': [
+#         {'n_estimators': 50, 'max_depth': 10},
+#         {'n_estimators': 100, 'max_depth': None},
+#         {'n_estimators': 200, 'max_depth': 20},
+#     ],
+#     'xgboost': xgb_grid,
+#     #     [
+#     #     {'n_estimators': 100, 'learning_rate': 0.1},
+#     #     {'n_estimators': 200, 'learning_rate': 0.05},
+#     #     {'n_estimators': 300, 'learning_rate': 0.01},
+#     # ],
+#     'svr': [
+#         {'C': 1.0, 'epsilon': 0.1},
+#         {'C': 10.0, 'epsilon': 0.1},
+#         {'C': 10.0, 'epsilon': 0.2},
+#     ],
+#     'mlp': [
+#         {'hidden_layer_sizes': (100,), 'max_iter': 1000},
+#         {'hidden_layer_sizes': (200,), 'max_iter': 1000},
+#         {'hidden_layer_sizes': (100,100), 'max_iter': 1000},
+#     ],
+#     'knn': [
+#         {'n_neighbors': 3},
+#         {'n_neighbors': 5},
+#         {'n_neighbors': 7},
+#     ],
+#     'gpr': [
+#         {'alpha': 1e-10},
+#         {'alpha': 1e-5},
+#         {'alpha': 1e-2},
+#     ],
+# }
+# param_grid = {
+#     "learning_rate": [0.001, 0.01, 0.1],
+#     "num_hidden_layers": [2, 3, 4],
+#     "num_neurons_per_layer": [32, 64, 128],
+#     "activation_function": ["relu", "tanh", "sigmoid"],
+#     "batch_size": [16, 32, 64],
+#     "optimizer": ["adam", "sgd"],
+#     "dropout_rate": [0.0, 0.2, 0.5]
+# }
 
-# ── Preprocessing chains ────────────────────────────────────────────────────
-preprocess_grid = [
-    [],                    # no preprocessing
-    ['EMSC'],
-    ['IntervalPLS'],
-    ['SNV'],
-    ['SNV', 'IntervalPLS'],
-    ['Normalization', 'IntervalPLS'],
-    ['IntervalPLS', 'Normalization' ],
-    ['Second Derivative'],
-    ['EMSC', 'SNV'],
-    ['IntervalPLS','EMSC', 'SNV'],
-    ['EMSC', 'SNV', 'IntervalPLS' ],
-    ['SNV', 'Second Derivative']
-]
+# # ── Preprocessing chains ────────────────────────────────────────────────────
+# preprocess_grid = [
+#     [],                    # no preprocessing
+#     ['EMSC'],
+#     ['IntervalPLS'],
+#     ['SNV'],
+#     ['SNV', 'IntervalPLS'],
+#     ['Normalization', 'IntervalPLS'],
+#     ['IntervalPLS', 'Normalization' ],
+#     ['Second Derivative'],
+#     ['EMSC', 'SNV'],
+#     ['IntervalPLS','EMSC', 'SNV'],
+#     ['EMSC', 'SNV', 'IntervalPLS' ],
+#     ['SNV', 'Second Derivative']
+# ]
 
-# =============================================================================
-# Targets
-# =============================================================================
-targets = [
-    ("Splicing Index",     "target_SI"),
-    # ("Hand‐Grip Strength", "HGS_pp_avg"),
-    # ("Ankle Dorsiflexion",  "ADF_pp_avg")
-]
+# # =============================================================================
+# # Targets
+# # =============================================================================
+# targets = [
+#     ("Splicing Index",     "target_SI"),
+#     # ("Hand‐Grip Strength", "HGS_pp_avg"),
+#     # ("Ankle Dorsiflexion",  "ADF_pp_avg")
+# ]
 
-# ── Set your new data locations here ────────────────────────────────────────
-data_directory              = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data"
-meta_data_directory         = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata.csv"
-external_test_spectra_path  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data_test_updated"
-external_test_metadata_path = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata_test_updated.csv"
-output_dir                  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\10_fold_results"
+# # ── Set your new data locations here ────────────────────────────────────────
+# data_directory              = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data"
+# meta_data_directory         = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata.csv"
+# external_test_spectra_path  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data_test_updated"
+# external_test_metadata_path = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata_test_updated.csv"
+# output_dir                  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\10_fold_results"
 
-# =============================================================================
-# Run the Leave-One-Out evaluator for each target
-# =============================================================================
-for nice_name, col in targets:
-    out_dir_col = os.path.join(output_dir, f'10_fold_LOO_{col}')
-    print(f"\n\n### Running LOO for {nice_name} ({col}) – saving to: {out_dir_col}")
-    loo_df, loo_metrics = leave_one_out_test_evaluation(
-        train_data_dir   = data_directory,
-        train_meta_path  = meta_data_directory,
-        test_data_dir    = external_test_spectra_path,
-        test_meta_path   = external_test_metadata_path,
-        model_list       = model_list,
-        hyperparam_grids = hyperparam_grids,
-        preprocess_grid  = preprocess_grid,
-        output_dir       = out_dir_col,
-        target_column    = col
-    )
+# # =============================================================================
+# # Run the Leave-One-Out evaluator for each target
+# # =============================================================================
+# for nice_name, col in targets:
+#     out_dir_col = os.path.join(output_dir, f'10_fold_LOO_{col}')
+#     print(f"\n\n### Running LOO for {nice_name} ({col}) – saving to: {out_dir_col}")
+#     loo_df, loo_metrics = leave_one_out_test_evaluation(
+#         train_data_dir   = data_directory,
+#         train_meta_path  = meta_data_directory,
+#         test_data_dir    = external_test_spectra_path,
+#         test_meta_path   = external_test_metadata_path,
+#         model_list       = model_list,
+#         hyperparam_grids = hyperparam_grids,
+#         preprocess_grid  = preprocess_grid,
+#         output_dir       = out_dir_col,
+#         target_column    = col
+#     )
 
-    print(f"--- {nice_name} predictions head ---")
-    print(loo_df.head())
-    print(f"--- {nice_name} aggregated metrics ---")
-    print(loo_metrics)
+#     print(f"--- {nice_name} predictions head ---")
+#     print(loo_df.head())
+#     print(f"--- {nice_name} aggregated metrics ---")
+#     print(loo_metrics)
 
