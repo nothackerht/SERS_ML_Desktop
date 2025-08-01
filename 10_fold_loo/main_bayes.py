@@ -41,11 +41,17 @@ from modules.bayes_visualizations import (
 )
 
 # Define your preprocessing chains
+# preprocess_grid = [
+#     [], ['EMSC'], ['IntervalPLS'], ['SNV'],
+#     ['SNV', 'IntervalPLS'], ['Normalization', 'IntervalPLS'], ['IntervalPLS', 'Normalization'],
+#     ['Second Derivative'], ['EMSC', 'SNV'], ['IntervalPLS', 'EMSC', 'SNV'],
+#     ['EMSC', 'SNV', 'IntervalPLS'], ['SNV', 'Second Derivative'],
+# ]
 preprocess_grid = [
-    [], ['EMSC'], ['IntervalPLS'], ['SNV'],
-    ['SNV', 'IntervalPLS'], ['Normalization', 'IntervalPLS'], ['IntervalPLS', 'Normalization'],
-    ['Second Derivative'], ['EMSC', 'SNV'], ['IntervalPLS', 'EMSC', 'SNV'],
-    ['EMSC', 'SNV', 'IntervalPLS'], ['SNV', 'Second Derivative'],
+    [], ['EMSC'], ['SNV'],
+    ['SNV'], ['Normalization'], ['Normalization'],
+    ['Second Derivative'], ['EMSC', 'SNV'], ['EMSC', 'SNV'],
+    ['EMSC', 'SNV',], ['SNV', 'Second Derivative'],
 ]
 
 # Ensure output dirs
@@ -82,45 +88,49 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
     # build per-spectrum target vectors and group indices
     y_tr = np.repeat(y_tr_meta, 9)    # 387 values
     y_ex = np.repeat(y_ex_meta, 9)    #  99 values
-    ext_idx = np.repeat(np.arange(n_ex), 9)
+
 
     # initialize record containers
     fold_records = []
     hyper_list   = []
     
     # …and then your for-loop follows…
-
+    ext_idx = np.repeat(np.arange(raw_ex.shape[1] // 9), 9)
 
     # ─── Outer LOO ─────────────────────────────────────────────────────────────
     for i in range(n_ex):
         # ─── NEW: isolate per‐fold folder ────────────────────────────────────
+        
+        print(f"Fold {i}: Holding out sample index {i}, ext_idx unique: {np.unique(ext_idx)}")
+
         fold_dir = os.path.join(bvvis.OUTPUT_DIR, f"fold_{i}")
         os.makedirs(fold_dir, exist_ok=True)
         bvvis.OUTPUT_DIR = fold_dir
         
         # hold‐out sample i
-        hold_mask = (ext_idx == i)           # boolean mask on raw_ex columns
-        X_hold    = raw_ex[:, hold_mask]     # (n_features, 9)
-        y_hold    = y_ex_meta[i]             # true sample-level target
+        hold_mask = (ext_idx == i)
+        X_hold    = raw_ex[:, hold_mask]
+        y_hold    = y_ex_meta[i]
 
         # remaining external spectra
         rem_mask = ~hold_mask
-        X_rem    = raw_ex[:, rem_mask]       # (n_features, 90)
+        X_rem    = raw_ex[:, rem_mask]
 
         # pool = all train + remaining ext
-        X_pool = np.hstack([raw_tr, X_rem])  
+        X_pool = np.hstack([raw_tr, X_rem])
         y_pool = np.concatenate([y_tr, y_ex[rem_mask]])
-
-        # group labels: 0..42 for train, 43.. for remaining ext
+        # ✅ Add this block right here
+        print(f"Fold {i}: X_pool shape = {X_pool.shape}, hash = {hash(X_pool.tobytes())}")
+        print(f"Fold {i}: y_pool hash = {hash(y_pool.tobytes())}")
+        # group labels
         grp_tr = np.repeat(np.arange(len(y_tr_meta)), 9)
         grp_ex = len(y_tr_meta) + ext_idx[rem_mask]
         groups = np.concatenate([grp_tr, grp_ex])
 
+        # ✅ IntervalPLS selection — done per fold
         prep = Preprocessing(X_pool, ipls_threshold=0.2)
-        # ─── if IntervalPLS in this chain, select intervals once on the pool ───
         sel = None
         if 'IntervalPLS' in chain:
-            # X_pool.T: (n_samples, n_features), y_pool: (n_samples,)
             sel = prep.select_intervals_by_pls_r2(
                 X_pool.T,
                 y_pool,
@@ -129,44 +139,68 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
                 cv_folds=5,
                 threshold=prep.ipls_threshold
             )
+        if sel is not None:
+            # Replace X_pool with interval-selected version BEFORE creating new Preprocessing instance
+            X_pool = X_pool[sel, :]
+            prep = Preprocessing(X_pool, ipls_threshold=0.2)
 
+            print(f"Fold {i}: selected {np.sum(sel)} / 150 intervals")  # ✅ Move inside
 
 
         # ─── Inner Bayesian CV objective ────────────────────────────────────────
         @use_named_args(xgb_space)
         def objective(**params):
-            # preprocess → samples × features
-            Xp  = prep.preprocess(chain, y=y_pool).T
-            yv  = y_pool
             gkf = GroupKFold(n_splits=5)
             rmses = []
+        
+            # Strip IntervalPLS since already applied
+            methods_wo_ipls = [m for m in chain if m != 'IntervalPLS']
 
-            for tr_i, va_i in gkf.split(Xp, yv, groups):
+
+
+            for tr_i, va_i in gkf.split(X_pool.T, y_pool, groups):
+                # Get training and validation spectra
+                X_train_fold = X_pool[:, tr_i]
+                y_train_fold = y_pool[tr_i]
+                grp_train    = groups[tr_i]
+        
+                X_val_fold   = X_pool[:, va_i]
+                y_val_fold   = y_pool[va_i]
+                grp_val      = groups[va_i]
+        
+                # Fit preprocessing on train only
+                fold_prep = Preprocessing(X_train_fold, ipls_threshold=0.2)
+                X_train_proc = fold_prep.preprocess(methods_wo_ipls, y=y_train_fold).T
+                X_val_proc   = fold_prep.preprocess(methods_wo_ipls, y=y_val_fold).T
+                assert X_train_proc.shape[1] == X_val_proc.shape[1], f"Fold shape mismatch: train={X_train_proc.shape}, val={X_val_proc.shape}"
+
+                # Fit model
                 mdl = XGBRegressor(
                     **params,
                     tree_method = 'hist',
                     device      = 'cuda' if torch.cuda.is_available() else 'cpu',
                     random_state=42
                 )
-                mdl.fit(Xp[tr_i], yv[tr_i])
-                preds = mdl.predict(Xp[va_i])
-
-                # sample-level averaging
+                mdl.fit(X_train_proc, y_train_fold)
+                preds = mdl.predict(X_val_proc)
+        
+                # Average to sample-level
                 grp_preds = {}
-                for g,p in zip(groups[va_i], preds):
+                for g, p in zip(grp_val, preds):
                     grp_preds.setdefault(g, []).append(p)
                 y_pred = np.array([np.mean(v) for v in grp_preds.values()])
-
-                # true sample-level targets
+        
+                # True values
                 true = np.array([
                     y_tr_meta[g] if g < len(y_tr_meta)
                     else y_ex_meta[g - len(y_tr_meta)]
                     for g in grp_preds
                 ])
-
+        
                 rmses.append(np.sqrt(mean_squared_error(true, y_pred)))
-
+        
             return float(np.mean(rmses))
+
 
         # ─── run Bayesian optimization ───────────────────────────────
         res = gp_minimize(objective, xgb_space, n_calls=n_calls, random_state=42)
@@ -196,11 +230,17 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         # ─── fold-specific prediction ─────────────────────────────────
         # ─── apply the same IntervalPLS selection to the hold-out ───────────
         if sel is not None:
-            Xh = X_hold[sel, :].T
+            print(f"Fold {i}: Intervals selected = {np.where(sel)[0].tolist()}")
+            # Apply only non-IntervalPLS preprocessing
+            methods_wo_ipls = [m for m in chain if m != 'IntervalPLS']
+            
+            hold_prep = Preprocessing(X_hold[sel, :], ipls_threshold=0.2)
+            Xh = hold_prep.preprocess(methods_wo_ipls, y=[y_hold]).T
         else:
-            Xh = Preprocessing(X_hold, ipls_threshold=0.2) \
-                    .preprocess(chain, y=[y_hold]).T
+            Xh = Preprocessing(X_hold, ipls_threshold=0.2).preprocess(chain, y=[y_hold]).T
 
+
+        assert Xh.shape[1] == X_full.shape[1], f"Mismatch: test={Xh.shape}, train={X_full.shape}"
 
         preds = mdl_final.predict(Xh)
         fold_records.append({
@@ -242,8 +282,14 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
 
         # Apply preprocessing using correct fold_sel consistently
         if fold_sel is not None:
-            X_train_final = X_pool[fold_sel, :].T
-            X_hold_final  = X_hold[fold_sel, :].T
+            methods_wo_ipls = [m for m in chain if m != 'IntervalPLS']
+            
+            train_prep = Preprocessing(X_pool[fold_sel, :], ipls_threshold=0.2)
+            X_train_final = train_prep.preprocess(methods_wo_ipls, y=y_pool).T
+        
+            hold_prep = Preprocessing(X_hold[fold_sel, :], ipls_threshold=0.2)
+            X_hold_final = hold_prep.preprocess(methods_wo_ipls, y=[y_hold]).T
+
         else:
             # Only preprocess fully if IntervalPLS wasn't part of the chain
             prep = Preprocessing(X_pool, ipls_threshold=0.2)
@@ -265,6 +311,8 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
             random_state=42
         )
         mdl_g.fit(X_train_final, y_pool)
+        assert X_train_final.shape[1] == X_hold_final.shape[1], f"Fold {i} shape mismatch: train {X_train_final.shape}, hold {X_hold_final.shape}"
+
         preds = mdl_g.predict(X_hold_final)
     
         global_records.append({
