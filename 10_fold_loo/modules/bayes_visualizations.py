@@ -123,7 +123,8 @@ def plot_residuals(model, X_test, y_test):
     plt.close()
 
 
-def plot_parity(model_name, y_test, y_pred):
+def plot_parity(model_name, y_test, y_pred, stds=None, show_r2=True):
+
     """
     Parity plot (Predicted vs. Actual) with 45-degree line.
     Includes model name or preprocessing chain in title if provided.
@@ -131,20 +132,30 @@ def plot_parity(model_name, y_test, y_pred):
     _ensure_dir()
     mn, mx = min(min(y_test), min(y_pred)), max(max(y_test), max(y_pred))
 
-    plt.figure(figsize=(6,6))
-    plt.scatter(y_test, y_pred, alpha=0.7)
+    plt.figure(figsize=(6, 6))
+    if stds is not None:
+        plt.errorbar(y_test, y_pred, yerr=stds, fmt='o', capsize=4, alpha=0.8)
+    else:
+        plt.scatter(y_test, y_pred, alpha=0.8)
+
     plt.plot([mn, mx], [mn, mx], '--', color='gray')
     plt.xlabel("Actual target_SI")
     plt.ylabel("Predicted target_SI")
-    
+
     title = "Parity Plot"
     if model_name:
         title += f": {model_name}"
-    plt.title(title)
 
+    if show_r2:
+        from sklearn.metrics import r2_score
+        r2 = r2_score(y_test, y_pred)
+        title += f"\nR² = {r2:.3f}"
+
+    plt.title(title)
     plt.tight_layout()
+
     filename = f"parity_plot_{model_name}.png" if model_name else "parity_plot.png"
-    filename = filename.replace(" ", "_").replace("/", "-")  # safe filename
+    filename = filename.replace(" ", "_").replace("/", "-")
     plt.savefig(os.path.join(OUTPUT_DIR, filename), dpi=300)
     plt.close()
 
