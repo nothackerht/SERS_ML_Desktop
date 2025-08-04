@@ -99,13 +99,16 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
 
     # ─── Outer LOO ─────────────────────────────────────────────────────────────
     for i in range(n_ex):
+        # Set per-fold subfolder output
+        fold_dir = os.path.join(base_out, '+'.join(chain), f"fold_{i}")
+        os.makedirs(fold_dir, exist_ok=True)
+        bvvis.OUTPUT_DIR = fold_dir
+
         # ─── NEW: isolate per‐fold folder ────────────────────────────────────
         
         print(f"Fold {i}: Holding out sample index {i}, ext_idx unique: {np.unique(ext_idx)}")
 
-        fold_dir = os.path.join(bvvis.OUTPUT_DIR, f"fold_{i}")
-        os.makedirs(fold_dir, exist_ok=True)
-        bvvis.OUTPUT_DIR = fold_dir
+
         
         # hold‐out sample i
         hold_mask = (ext_idx == i)
@@ -252,6 +255,8 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
             'fold_pred_std':  float(np.std(preds)),
             'fold_rmse':      float(np.sqrt(mean_squared_error([y_hold], [preds.mean()])))
         })
+        # Reset OUTPUT_DIR back to the main chain folder for global retraining
+        bvvis.OUTPUT_DIR = os.path.join(base_out, '+'.join(chain))
 
     # ─── aggregate mode hyperparameters ─────────────────────────────────────
     mode_hp = Counter(hyper_list).most_common(1)[0][0]
