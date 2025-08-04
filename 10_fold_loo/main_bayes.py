@@ -382,7 +382,7 @@ if __name__ == '__main__':
         f_rec, g_rec = run_outer_loo(
             raw_tr, y_tr_meta,
             raw_ex, y_ex_meta,
-            chain, n_calls=25
+            chain, n_calls=25   
         )
     
         # 4) pickle & mark done
@@ -405,7 +405,8 @@ if __name__ == '__main__':
     # final parity plot
     y_true = df_both['fold'].apply(lambda i: y_ex_meta[i]).values
     y_pred = df_both['global_pred_mean'].values
-    bv_plot_parity(None, y_true, y_pred)
+    bv_plot_parity("XGBoost_Global", y_true, y_pred)
+
 
     print("✅ Saved comparison results to", output_dir)
 

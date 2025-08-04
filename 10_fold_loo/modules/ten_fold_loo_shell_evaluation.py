@@ -47,8 +47,12 @@ def leave_one_out_test_evaluation(
     # Outer LOO per sample
     for model_name in model_list:
         for prep_chain in preprocess_grid:
-            outer = GroupKFold(n_splits=n_test)
-            for fold, (ti, to) in enumerate(outer.split(all_test.T, groups=test_groups), 1):
+            for fold in range(n_test):
+                held = fold  # index of the test sample to hold out
+                held_indices = np.arange(held * 9, (held + 1) * 9)
+                ti = np.setdiff1d(np.arange(all_test.shape[1]), held_indices)
+                to = held_indices
+
                 held = np.unique(test_groups[to])[0]
 
                 # Build combined raw spectra and labels

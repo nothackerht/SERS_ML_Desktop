@@ -123,9 +123,10 @@ def plot_residuals(model, X_test, y_test):
     plt.close()
 
 
-def plot_parity(y_test, y_pred):
+def plot_parity(model_name, y_test, y_pred):
     """
     Parity plot (Predicted vs. Actual) with 45-degree line.
+    Includes model name or preprocessing chain in title if provided.
     """
     _ensure_dir()
     mn, mx = min(min(y_test), min(y_pred)), max(max(y_test), max(y_pred))
@@ -135,10 +136,18 @@ def plot_parity(y_test, y_pred):
     plt.plot([mn, mx], [mn, mx], '--', color='gray')
     plt.xlabel("Actual target_SI")
     plt.ylabel("Predicted target_SI")
-    plt.title("Parity Plot")
+    
+    title = "Parity Plot"
+    if model_name:
+        title += f": {model_name}"
+    plt.title(title)
+
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, 'parity_plot.png'), dpi=300)
+    filename = f"parity_plot_{model_name}.png" if model_name else "parity_plot.png"
+    filename = filename.replace(" ", "_").replace("/", "-")  # safe filename
+    plt.savefig(os.path.join(OUTPUT_DIR, filename), dpi=300)
     plt.close()
+
 
 # SHAP summary optional
 
