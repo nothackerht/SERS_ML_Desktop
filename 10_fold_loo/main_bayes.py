@@ -246,6 +246,13 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         assert Xh.shape[1] == X_full.shape[1], f"Mismatch: test={Xh.shape}, train={X_full.shape}"
 
         preds = mdl_final.predict(Xh)
+        # Save individual parity plot for this fold
+        bv_plot_parity(
+            title=f"Fold {i} - { '+'.join(chain) }",
+            y_true=[y_hold],
+            y_pred=[preds.mean()]
+        )
+
         fold_records.append({
             'fold':           i,
             'preproc':        '+'.join(chain),
@@ -401,17 +408,32 @@ if __name__ == '__main__':
 
        
 
-    # build and save final table
-    df_f   = pd.DataFrame(all_folds)
-    df_g   = pd.DataFrame(all_global)
-    df_both = df_f.merge(df_g, on=['fold','preproc'])
-    df_both.to_excel(os.path.join(output_dir, 'loo_bayes_comparison.xlsx'), index=False)
+# ─── Build and save final table ──────────────────────────────────────────
+df_f   = pd.DataFrame(all_folds)
+df_g   = pd.DataFrame(all_global)
+df_both = df_f.merge(df_g, on=['fold','preproc'])
+df_both.to_excel(os.path.join(output_dir, 'loo_bayes_comparison.xlsx'), index=False)
 
-    # final parity plot
-    y_true = df_both['fold'].apply(lambda i: y_ex_meta[i]).values
-    y_pred = df_both['global_pred_mean'].values
-    bv_plot_parity("XGBoost_Global", y_true, y_pred)
+# ─── Generate chain-wise ensemble/global parity plots ────────────────────
+grouped = df_both.groupby("preproc")
 
+for preproc, group in grouped:
+    group = group.sort_values("fold")
+    y_true  = group["fold"].apply(lambda i: y_ex_meta[i]).values
+    y_ens   = group["fold_pred_mean"].values
+    y_glob  = group["global_pred_mean"].values
 
-    print("✅ Saved comparison results to", output_dir)
+    # Save both ensemble and global parity plots for this preprocessing chain
+    std_ens = group["fold_pred_std"].values
+    bv_plot_parity(f"Ensemble_{preproc}", y_true, y_ens, stds=std_ens)
+
+    bv_plot_parity(f"Global_{preproc}",   y_true, y_glob)
+
+# ─── Final overall global parity plot ─────────────────────────────────────
+y_true = df_both['fold'].apply(lambda i: y_ex_meta[i]).values
+y_pred = df_both['global_pred_mean'].values
+bv_plot_parity("XGBoost_Global", y_true, y_pred)
+
+print("✅ Saved comparison results to", output_dir)
+
 
