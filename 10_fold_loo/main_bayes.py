@@ -248,10 +248,11 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         preds = mdl_final.predict(Xh)
         # Save individual parity plot for this fold
         bv_plot_parity(
-            title=f"Fold {i} - { '+'.join(chain) }",
-            y_true=[y_hold],
+            model_name=f"Fold_{i}_{'+'.join(chain)}",
+            y_test=[y_hold],
             y_pred=[preds.mean()]
         )
+
 
         fold_records.append({
             'fold':           i,
