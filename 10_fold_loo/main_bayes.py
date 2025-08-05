@@ -25,6 +25,7 @@ from sklearn.metrics import mean_squared_error
 from collections import Counter
 from xgboost import XGBRegressor
 import modules.bayes_visualizations as bvvis
+import shutil
 
 from modules.data_loader   import load_data, load_metadata
 from modules.preprocessing import Preprocessing
@@ -405,6 +406,10 @@ if __name__ == '__main__':
     all_global = []
 
     base_out = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\bayes_results"
+
+    summary_dir = os.path.join(base_out, "_summary_parity_plots")
+    os.makedirs(summary_dir, exist_ok=True)
+
     from modules import bayes_visualizations
     
     for chain in preprocess_grid:
@@ -457,9 +462,19 @@ for preproc, group in grouped:
 
     # Save both ensemble and global parity plots for this preprocessing chain
     std_ens = group["fold_pred_std"].values
-    bv_plot_parity(f"Ensemble_{preproc}", y_true, y_ens, stds=std_ens)
+    # Save in chain folder
+    ens_plot = bv_plot_parity(f"Ensemble_{preproc}", y_true, y_ens, stds=std_ens)
+    glob_plot = bv_plot_parity(f"Global_{preproc}", y_true, y_glob)
+    
+    # Copy to summary folder
+    ens_src = os.path.join(bvvis.OUTPUT_DIR, f"Ensemble_{preproc}.png")
+    glob_src = os.path.join(bvvis.OUTPUT_DIR, f"Global_{preproc}.png")
+    
+    if os.path.exists(ens_src):
+        shutil.copy(ens_src, os.path.join(summary_dir, f"Ensemble_{preproc}.png"))
+    if os.path.exists(glob_src):
+        shutil.copy(glob_src, os.path.join(summary_dir, f"Global_{preproc}.png"))
 
-    bv_plot_parity(f"Global_{preproc}",   y_true, y_glob)
 
 # ─── Final overall global parity plot ─────────────────────────────────────
 y_true = df_both['fold'].apply(lambda i: y_ex_meta[i]).values
