@@ -264,6 +264,7 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         
         fold_records.append({
             'fold':                  i,
+            'held_out_sample':       str(i),  # ✅ track held-out sample index
             'preproc':               '+'.join(chain),
             'best_hp':               best_hp,
             'intervals':             sel,  # 🔥 store selected interval indices
@@ -273,6 +274,7 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
             'y_test_spectra':        y_test_spectra,   # 🔥 full spectral-level true values
             'y_pred_spectra':        y_pred_spectra    # 🔥 full spectral-level predictions
         })
+
 
         # Reset OUTPUT_DIR back to the main chain folder for global retraining
         bvvis.OUTPUT_DIR = os.path.join(base_out, '+'.join(chain))
@@ -349,6 +351,7 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         
         global_records.append({
             'fold':                  i,
+            'held_out_sample':       str(i),  # ✅ track held-out sample index
             'preproc':               '+'.join(chain),
             'mode_hp':               mode_hp,
             'global_pred_mean':      avg_pred,
@@ -357,8 +360,8 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
             'y_test_spectra':        y_test_spectra,    #  full spectral-level true values
             'y_pred_spectra':        y_pred_spectra     #  full spectral-level predictions
         })
-
-
+        
+        
 
     return fold_records, global_records
 
