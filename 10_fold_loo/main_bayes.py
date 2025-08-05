@@ -66,7 +66,8 @@ def load_external(train_dir, train_meta, test_dir, test_meta):
         metadata_path=train_meta,
         return_filenames=True
     )
-    y_tr_meta = load_metadata(train_meta)['target_SI'].values
+    train_meta_df = load_metadata(train_meta)
+    y_tr_meta = train_meta_df['target_SI'].values
 
     # raw_ex: (n_features, 9×11)=99 spectra
     _, _, raw_ex, _ = load_data(
@@ -74,10 +75,11 @@ def load_external(train_dir, train_meta, test_dir, test_meta):
         metadata_path=test_meta,
         return_filenames=True
     )
-    y_ex_meta = load_metadata(test_meta)['target_SI'].values
+    test_meta_df = load_metadata(test_meta)
+    y_ex_meta = test_meta_df['target_SI'].values
+    sample_ids_ex = test_meta_df.index.astype(str).tolist()  # ✅ store real sample IDs
 
-    return raw_tr, y_tr_meta, raw_ex, y_ex_meta
-
+    return raw_tr, y_tr_meta, raw_ex, y_ex_meta, sample_ids_ex
 
 
 
@@ -262,9 +264,11 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
             y_pred=[avg_pred]
         )
         
+     
         fold_records.append({
             'fold':                  i,
-            'held_out_sample':       str(i),  # ✅ track held-out sample index
+            'held_out_sample':       sample_ids_ex[i],  # ✅ real external sample ID
+
             'preproc':               '+'.join(chain),
             'best_hp':               best_hp,
             'intervals':             sel,  # 🔥 store selected interval indices
@@ -351,7 +355,8 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         
         global_records.append({
             'fold':                  i,
-            'held_out_sample':       str(i),  # ✅ track held-out sample index
+            'held_out_sample':       sample_ids_ex[i],  # ✅ real external sample ID
+
             'preproc':               '+'.join(chain),
             'mode_hp':               mode_hp,
             'global_pred_mean':      avg_pred,
@@ -379,12 +384,13 @@ if __name__ == '__main__':
     os.makedirs(output_dir, exist_ok=True)
 
     # Load raw replicate spectra + per-sample metadata
-    raw_tr, y_tr_meta, raw_ex, y_ex_meta = load_external(
+    raw_tr, y_tr_meta, raw_ex, y_ex_meta, sample_ids_ex = load_external(
         data_directory,
         meta_data_directory,
         external_test_spectra_path,
         external_test_metadata_path
     )
+
     # **HERE**: Make a shortcut to the viz module and define base_out
     import modules.bayes_visualizations as bvvis
     base_out = output_dir
