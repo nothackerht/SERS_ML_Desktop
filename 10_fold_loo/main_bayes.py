@@ -244,25 +244,36 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
 
 
         assert Xh.shape[1] == X_full.shape[1], f"Mismatch: test={Xh.shape}, train={X_full.shape}"
-
+        
         preds = mdl_final.predict(Xh)
-        # Save individual parity plot for this fold
+        
+        # ✅ Store raw per-spectrum predictions
+        y_test_spectra = np.repeat(y_hold, len(preds))  # each spectrum gets same sample-level target
+        y_pred_spectra = preds.tolist()
+        
+        # ✅ Average to sample-level for RMSE
+        avg_pred = float(np.mean(preds))
+        avg_rmse = float(np.sqrt(mean_squared_error([y_hold], [avg_pred])))
+        
+        # Save parity plot using averaged values (keeps parity plot consistent with RMSE metric)
         bv_plot_parity(
             model_name=f"Fold_{i}_{'+'.join(chain)}",
             y_test=[y_hold],
-            y_pred=[preds.mean()]
+            y_pred=[avg_pred]
         )
-
-
+        
         fold_records.append({
-            'fold':           i,
-            'preproc':        '+'.join(chain),
-            'best_hp':        best_hp,
-            'intervals':      sel,  # 🔥 store selected interval indices
-            'fold_pred_mean': float(np.mean(preds)),
-            'fold_pred_std':  float(np.std(preds)),
-            'fold_rmse':      float(np.sqrt(mean_squared_error([y_hold], [preds.mean()])))
+            'fold':                  i,
+            'preproc':               '+'.join(chain),
+            'best_hp':               best_hp,
+            'intervals':             sel,  # 🔥 store selected interval indices
+            'fold_pred_mean':        avg_pred,
+            'fold_pred_std':         float(np.std(preds)),
+            'fold_rmse':             avg_rmse,
+            'y_test_spectra':        y_test_spectra,   # 🔥 full spectral-level true values
+            'y_pred_spectra':        y_pred_spectra    # 🔥 full spectral-level predictions
         })
+
         # Reset OUTPUT_DIR back to the main chain folder for global retraining
         bvvis.OUTPUT_DIR = os.path.join(base_out, '+'.join(chain))
 
@@ -327,15 +338,26 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
         assert X_train_final.shape[1] == X_hold_final.shape[1], f"Fold {i} shape mismatch: train {X_train_final.shape}, hold {X_hold_final.shape}"
 
         preds = mdl_g.predict(X_hold_final)
-    
+        
+        # ✅ Store raw per-spectrum predictions for debugging
+        y_test_spectra = np.repeat(y_hold, len(preds))  # all 9 spectra have same target
+        y_pred_spectra = preds.tolist()
+        
+        # ✅ Average to sample-level for RMSE
+        avg_pred = float(np.mean(preds))
+        avg_rmse = float(np.sqrt(mean_squared_error([y_hold], [avg_pred])))
+        
         global_records.append({
-            'fold':             i,
-            'preproc':          '+'.join(chain),
-            'mode_hp':          mode_hp,
-            'global_pred_mean': preds.mean(),
-            'global_pred_std':  preds.std(),
-            'global_rmse':      np.sqrt(mean_squared_error([y_hold], [preds.mean()]))
+            'fold':                  i,
+            'preproc':               '+'.join(chain),
+            'mode_hp':               mode_hp,
+            'global_pred_mean':      avg_pred,
+            'global_pred_std':       float(np.std(preds)),
+            'global_rmse':           avg_rmse,
+            'y_test_spectra':        y_test_spectra,    #  full spectral-level true values
+            'y_pred_spectra':        y_pred_spectra     #  full spectral-level predictions
         })
+
 
 
     return fold_records, global_records
