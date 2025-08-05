@@ -48,11 +48,14 @@ from modules.bayes_visualizations import (
 #     ['Second Derivative'], ['EMSC', 'SNV'], ['IntervalPLS', 'EMSC', 'SNV'],
 #     ['EMSC', 'SNV', 'IntervalPLS'], ['SNV', 'Second Derivative'],
 # ]
+# preprocess_grid = [
+#     [], ['EMSC'], ['SNV'],
+#     ['SNV'], ['Normalization'], ['Normalization'],
+#     ['Second Derivative'], ['EMSC', 'SNV'], ['EMSC', 'SNV'],
+#     ['EMSC', 'SNV',], ['SNV', 'Second Derivative'],
+# ]
 preprocess_grid = [
-    [], ['EMSC'], ['SNV'],
-    ['SNV'], ['Normalization'], ['Normalization'],
-    ['Second Derivative'], ['EMSC', 'SNV'], ['EMSC', 'SNV'],
-    ['EMSC', 'SNV',], ['SNV', 'Second Derivative'],
+    [], ['EMSC']
 ]
 
 # Ensure output dirs
