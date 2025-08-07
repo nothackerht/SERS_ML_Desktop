@@ -516,9 +516,9 @@ for preproc, group in grouped:
         shutil.copy(glob_src, os.path.join(summary_dir, f"Global_{preproc}.png"))
 
 
-# ─── Final overall global parity plot ─────────────────────────────────────
+# ─── Final overall global parity plot (average of all global predictions) ─────
 y_true = df_both['fold'].apply(lambda i: y_ex_meta[i]).values
-y_pred = df_both['global_pred_mean'].values
+y_pred = df_both['global_pred'].values
 bv_plot_parity("XGBoost_Global", y_true, y_pred)
 
 print("✅ Saved comparison results to", output_dir)
