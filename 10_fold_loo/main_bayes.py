@@ -55,7 +55,7 @@ from modules.bayes_visualizations import (
 #     ['EMSC', 'SNV',], ['SNV', 'Second Derivative'],
 # ]
 preprocess_grid = [
-    [], ['EMSC']
+    [],
 ]
 
 # Ensure output dirs
@@ -466,9 +466,13 @@ for preproc, group in grouped:
     # Save both ensemble and global parity plots for this preprocessing chain
     std_ens = group["fold_pred_std"].values
     # Save in chain folder
-    ens_plot = bv_plot_parity(f"Ensemble_{preproc}", y_true, y_ens, stds=std_ens)
-    glob_plot = bv_plot_parity(f"Global_{preproc}", y_true, y_glob)
+    # Set correct directory for summary plots
+    bvvis.OUTPUT_DIR = summary_dir
     
+    # Save summary ensemble and global plots
+    bv_plot_parity(f"Ensemble_{preproc}", y_true, y_ens, stds=std_ens)
+    bv_plot_parity(f"Global_{preproc}", y_true, y_glob)
+
     # Copy to summary folder
     ens_src = os.path.join(bvvis.OUTPUT_DIR, f"Ensemble_{preproc}.png")
     glob_src = os.path.join(bvvis.OUTPUT_DIR, f"Global_{preproc}.png")
