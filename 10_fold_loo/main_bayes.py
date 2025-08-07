@@ -448,11 +448,43 @@ if __name__ == '__main__':
 
        
 
-# ─── Build and save final table ──────────────────────────────────────────
 df_f   = pd.DataFrame(all_folds)
 df_g   = pd.DataFrame(all_global)
+
+# Merge on fold and preprocessing method
 df_both = df_f.merge(df_g, on=['fold','preproc'])
+
+# Flatten HP tuples to readable strings
+df_both["best_hp"] = df_both["best_hp"].apply(lambda x: str(x))
+df_both["mode_hp"] = df_both["mode_hp"].apply(lambda x: str(x))
+
+# Reorder and rename for clarity
+df_both = df_both[[
+    'fold', 'held_out_sample_x', 'preproc',
+    'best_hp', 'fold_pred_mean', 'fold_pred_std', 'fold_rmse',
+    'mode_hp', 'global_pred_mean', 'global_pred_std', 'global_rmse'
+]]
+
+df_both.rename(columns={
+    'held_out_sample_x': 'held_out_sample',
+    'best_hp': 'ensemble_hyperparams',
+    'fold_pred_mean': 'ensemble_pred',
+    'fold_pred_std': 'ensemble_std',
+    'fold_rmse': 'ensemble_rmse',
+    'mode_hp': 'global_hyperparams',
+    'global_pred_mean': 'global_pred',
+    'global_pred_std': 'global_std',
+    'global_rmse': 'global_rmse'
+}, inplace=True)
+
+# Write Excel
 df_both.to_excel(os.path.join(output_dir, 'loo_bayes_comparison.xlsx'), index=False)
+print("\n📊 Average RMSE by method:")
+for method, group in df_both.groupby("preproc"):
+    rmse_ens = group["ensemble_rmse"].mean()
+    rmse_glo = group["global_rmse"].mean()
+    print(f"  {method:<25} Ensemble = {rmse_ens:.4f}, Global = {rmse_glo:.4f}")
+
 
 # ─── Generate chain-wise ensemble/global parity plots ────────────────────
 grouped = df_both.groupby("preproc")
@@ -460,8 +492,9 @@ grouped = df_both.groupby("preproc")
 for preproc, group in grouped:
     group = group.sort_values("fold")
     y_true  = group["fold"].apply(lambda i: y_ex_meta[i]).values
-    y_ens   = group["fold_pred_mean"].values
-    y_glob  = group["global_pred_mean"].values
+    y_ens = group["ensemble_pred"].values
+    y_glob = group["global_pred"].values
+
 
     # Save both ensemble and global parity plots for this preprocessing chain
     std_ens = group["fold_pred_std"].values
