@@ -130,6 +130,11 @@ def plot_parity(model_name, y_test, y_pred, stds=None, show_r2=True):
     Includes model name or preprocessing chain in title if provided.
     """
     _ensure_dir()
+    # Create subfolder per model/prep name
+    safe_dir = model_name.replace(" ", "_").replace("/", "-")
+    plot_dir = os.path.join(OUTPUT_DIR, safe_dir)
+    os.makedirs(plot_dir, exist_ok=True)
+
     mn, mx = min(min(y_test), min(y_pred)), max(max(y_test), max(y_pred))
 
     plt.figure(figsize=(6, 6))
@@ -147,16 +152,20 @@ def plot_parity(model_name, y_test, y_pred, stds=None, show_r2=True):
         title += f": {model_name}"
 
     if show_r2:
-        from sklearn.metrics import r2_score
-        r2 = r2_score(y_test, y_pred)
-        title += f"\nR² = {r2:.3f}"
+
+        from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+        r2  = r2_score(y_test, y_pred)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        mae = mean_absolute_error(y_test, y_pred)
+        title += f"\nR² = {r2:.3f}, RMSE = {rmse:.3f}, MAE = {mae:.3f}"
 
     plt.title(title)
     plt.tight_layout()
 
     filename = f"parity_plot_{model_name}.png" if model_name else "parity_plot.png"
     filename = filename.replace(" ", "_").replace("/", "-")
-    plt.savefig(os.path.join(OUTPUT_DIR, filename), dpi=300)
+    plt.savefig(os.path.join(plot_dir, filename), dpi=300)
+
     plt.close()
 
 
