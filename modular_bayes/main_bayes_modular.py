@@ -1,43 +1,36 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Thu Aug  7 12:51:22 2025
-
-@author: spect
-"""
-
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 main_bayes_modular.py
 
 Performs:
-1. Outer LOO over 11 external test samples
-2. Inner 5-fold GroupKFold with Bayesian optimization using optimize_xgb_with_cv()
-3. Preprocessing + interval selection per chain
-4. Fold-wise and global retraining + parity plot generation
+1) Outer LOO over 11 external test samples
+2) Inner 5-fold GroupKFold with Bayesian optimization (optimize_xgb_with_cv)
+3) Preprocessing per chain (fit on X_pool; transform held-out only)
+4) Phase 1: per-fold tuned ensemble; Phase 2: global HPs (binned mode) re-run
+5) Parity plots (ensemble vs global) saved per-chain
 """
 
 import os
-import pickle
 import numpy as np
-import torch
 import pandas as pd
-from collections import Counter
-from xgboost import XGBRegressor
 
 from modules.data_loader import load_data, load_metadata
-from modules.preprocessing import Preprocessing
 from modules.hyperparams import xgb_space
-from modules.bayes_visualizations import (
-    plot_parity, plot_convergence_curve, plot_evaluations_scatter,
-    plot_hyperparam_heatmap, plot_feature_importance, plot_residuals,
-    plot_shap_summary
-)
-from modules.bayes_opt import optimize_xgb_with_cv
 from modules.run_outer_loo import run_outer_loo
-import modules.bayes_visualizations as bvvis  # just once at the top if not already
+from modules.bayes_visualizations import plot_parity
+import modules.bayes_visualizations as bvvis  # to set OUTPUT_DIR per chain
+
 
 def load_external(train_dir, train_meta, test_dir, test_meta):
+    """
+    Returns:
+        raw_tr (1731, 9*N_train)
+        y_tr_meta (N_train,)
+        raw_ex (1731, 9*N_test)
+        y_ex_meta (N_test,)
+        sample_ids_ex (list[str] with N_test items)
+    """
     _, _, raw_tr, _ = load_data(train_dir, metadata_path=train_meta, return_filenames=True)
     train_meta_df = load_metadata(train_meta)
     y_tr_meta = train_meta_df['target_SI'].values
@@ -47,14 +40,15 @@ def load_external(train_dir, train_meta, test_dir, test_meta):
     y_ex_meta = test_meta_df['target_SI'].values
     sample_ids_ex = test_meta_df.index.astype(str).tolist()
 
+    # Basic consistency checks
+    assert raw_ex.shape[1] % 9 == 0, "External set must have 9 spectra per sample."
+    assert len(y_ex_meta) == raw_ex.shape[1] // 9, "Mismatch between test labels and spectra."
+
     return raw_tr, y_tr_meta, raw_ex, y_ex_meta, sample_ids_ex
 
 
-# Placeholder for run_outer_loo() — you’ll need to paste your full logic here,
-# and replace the objective definition with a call to optimize_xgb_with_cv()
-
-# Call this script with your defined preprocessing grid and base path
 if __name__ == '__main__':
+    # ---- Paths (edit as needed) ----
     data_directory              = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data"
     meta_data_directory         = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata.csv"
     external_test_spectra_path  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data_test_updated"
@@ -62,63 +56,75 @@ if __name__ == '__main__':
     output_dir                  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\bayes_results"
     os.makedirs(output_dir, exist_ok=True)
 
-    # Load external data
+    # ---- Load external data ----
     raw_tr, y_tr_meta, raw_ex, y_ex_meta, sample_ids_ex = load_external(
         data_directory,
         meta_data_directory,
         external_test_spectra_path,
         external_test_metadata_path
     )
+    print("✅ Data loaded. Running outer LOO across preprocessing chains...")
 
-    print("✅ Data loaded. Now ready to call run_outer_loo using optimize_xgb_with_cv()")
-    # preprocess_grid = [
-    #     [], 
-    # ]
+    # ---- Preprocessing chains ----
     preprocess_grid = [
         [], ['EMSC'], ['SNV'],
         ['Normalization'], ['Second Derivative'],
-        ['EMSC', 'SNV'], ['EMSC', 'SNV', 'Second Derivative'],
+        ['EMSC', 'SNV'],
+        ['EMSC', 'SNV', 'Second Derivative'],
         ['SNV', 'Second Derivative'],
     ]
 
-    
-    
     all_folds = []
     all_global = []
-    
+
     for chain in preprocess_grid:
-        base_out = os.path.join(output_dir, '+'.join(chain) if chain else "none")
+        chain_name = "+".join(chain) if chain else "none"
+        base_out = os.path.join(output_dir, chain_name)
         os.makedirs(base_out, exist_ok=True)
-    
+
+        # Route chain-level plots to the chain folder
+        bvvis.OUTPUT_DIR = base_out
+
+        print(f"→ Chain: {chain_name}  (results in: {base_out})")
         folds, globals_ = run_outer_loo(
             raw_tr, y_tr_meta, raw_ex, y_ex_meta, sample_ids_ex,
             chain, xgb_space, base_out, n_calls=25
         )
-    
+
         all_folds.extend(folds)
         all_global.extend(globals_)
-        
-        
-        # Sort predictions by fold index to align them
-        df_chain = pd.DataFrame(globals_)  # from global_records
-        df_chain = df_chain.sort_values("fold")
-        
-        # Build parity data
-        y_true = [y_ex_meta[i] for i in df_chain["fold"]]
+
+        # ----- Chain-level parity summaries -----
+        # Sort by fold to line up true/pred values
         df_folds = pd.DataFrame(folds).sort_values("fold")
-        y_ens = df_folds["fold_pred_mean"]
-        y_std = df_folds["fold_pred_std"]
+        df_global = pd.DataFrame(globals_).sort_values("fold")
 
-        y_glob = df_chain["global_pred_mean"]     # from global model
-        
-        # Set save location
-        bvvis.OUTPUT_DIR = base_out  # saves into chain folder
-        
-        # Save plots
-        plot_parity(f"Ensemble_{'+'.join(chain)}", y_true, y_ens, stds=y_std)
-        plot_parity(f"Global_{'+'.join(chain)}",   y_true, y_glob)
+        # Build y_true from fold indices (ensures order matches)
+        y_true = [y_ex_meta[i] for i in df_global["fold"]]
 
-    df_f = pd.DataFrame(all_folds)
-    df_g = pd.DataFrame(all_global)
-    df_both = df_f.merge(df_g, on=["fold", "preproc"])
+        # Ensemble (per-fold tuned)
+        y_ens = df_folds["fold_pred_mean"].tolist()
+        y_std = df_folds["fold_pred_std"].tolist()
+
+        # Global (fixed HPs)
+        y_glob = df_global["global_pred_mean"].tolist()
+
+        # Save parity plots into chain folder
+        plot_parity(f"Ensemble_{chain_name}", y_true, y_ens, stds=y_std)
+        plot_parity(f"Global_{chain_name}",   y_true, y_glob)
+
+        # (Optional) save chain-level CSVs
+        df_folds.to_csv(os.path.join(base_out, f"{chain_name}_ensemble_folds.csv"), index=False)
+        df_global.to_csv(os.path.join(base_out, f"{chain_name}_global_folds.csv"), index=False)
+
+    # ---- Combined summary across chains ----
+    df_all_folds = pd.DataFrame(all_folds)
+    df_all_global = pd.DataFrame(all_global)
+
+    # Merge on keys present in both (fold + preproc); keeps both ensemble/global metrics
+    df_both = df_all_folds.merge(df_all_global, on=["fold", "preproc"], suffixes=("_ens", "_glob"))
+    df_all_folds.to_excel(os.path.join(output_dir, "loo_bayes_ensemble_all.xlsx"), index=False)
+    df_all_global.to_excel(os.path.join(output_dir, "loo_bayes_global_all.xlsx"), index=False)
     df_both.to_excel(os.path.join(output_dir, "loo_bayes_comparison.xlsx"), index=False)
+
+    print("✅ Done. Wrote combined Excel files and chain-level plots/CSVs.")
