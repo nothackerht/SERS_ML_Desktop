@@ -18,28 +18,26 @@ def optimize_xgb_with_cv(
     IntervalPLS must be handled externally before calling this function.
     """
     methods_wo_ipls = [m for m in chain if m != 'IntervalPLS']
-
+    
     @use_named_args(xgb_space)
     def objective(**params):
         rmses = []
         gkf = GroupKFold(n_splits=5)
-
+    
         for train_idx, val_idx in gkf.split(X_pool.T, y_pool, groups):
             X_train = X_pool[:, train_idx].T
             y_train = y_pool[train_idx]
             X_val   = X_pool[:, val_idx].T
             y_val   = y_pool[val_idx]
             g_val   = groups[val_idx]
-
+    
             print(f"[BayesOpt CV] Train: {X_train.shape}, Val: {X_val.shape}, Val Groups: {np.unique(g_val)}")
-
-            # ✅ Corrected: No positional arg passed to Preprocessing()
+    
+            # Preprocessing (train → fit_transform, val → transform)
             fold_prep = Preprocessing(ipls_threshold=0.2)
-
-            # Preprocess using training-fitted transformer
-            X_train_proc = fold_prep.preprocess(methods_wo_ipls, y=y_train, X=X_train)
-            X_val_proc   = fold_prep.preprocess(methods_wo_ipls, y=y_val,   X=X_val)
-
+            X_train_proc = fold_prep.fit_transform(X_train.T, methods_wo_ipls, y=y_train).T
+            X_val_proc   = fold_prep.transform(X_val.T, methods_wo_ipls).T
+    
             model = XGBRegressor(
                 **params,
                 tree_method='hist',
@@ -48,15 +46,16 @@ def optimize_xgb_with_cv(
             )
             model.fit(X_train_proc, y_train)
             preds = model.predict(X_val_proc)
-
+    
             # 🧠 Group predictions and average across spectra (9 per sample)
             df = pd.DataFrame({'group': g_val, 'true': y_val, 'pred': preds})
             grouped = df.groupby('group').agg({'true': 'first', 'pred': 'mean'})
-
+    
             rmse = np.sqrt(mean_squared_error(grouped['true'], grouped['pred']))
             rmses.append(rmse)
-
+    
         return float(np.mean(rmses))
+
 
     result = gp_minimize(
         objective,
