@@ -71,15 +71,15 @@ if __name__ == '__main__':
     )
 
     print("✅ Data loaded. Now ready to call run_outer_loo using optimize_xgb_with_cv()")
-    preprocess_grid = [
-        [], 
-    ]
     # preprocess_grid = [
-    #     [], ['EMSC'], ['SNV'],
-    #     ['Normalization'], ['Second Derivative'],
-    #     ['EMSC', 'SNV'], ['EMSC', 'SNV', 'Second Derivative'],
-    #     ['SNV', 'Second Derivative'],
+    #     [], 
     # ]
+    preprocess_grid = [
+        [], ['EMSC'], ['SNV'],
+        ['Normalization'], ['Second Derivative'],
+        ['EMSC', 'SNV'], ['EMSC', 'SNV', 'Second Derivative'],
+        ['SNV', 'Second Derivative'],
+    ]
 
     
     
