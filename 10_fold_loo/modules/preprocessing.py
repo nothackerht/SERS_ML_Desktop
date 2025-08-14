@@ -132,9 +132,8 @@ class Preprocessing:
         plt.show()
 
         # 5) fallback if none passed
-        if not selected:
-            print("IntervalPLS: no intervals passed threshold, using full spectrum")
-            return np.arange(n_features)
+        if not selected:            print("IntervalPLS: no intervals passed threshold, using full spectrum")
+        return np.arange(n_features)
 
         # 6) return flattened list of all selected feature indices
         return np.hstack(selected)

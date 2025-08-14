@@ -156,14 +156,14 @@ def load_data(data_dir, metadata_path=None, return_filenames=False):
     else:
         return wavenumbers, averaged_spectra, all_spectra
 # # THIS VERSION LOADS DM1 AND CONTROLS
-# def load_metadata(fp):
-#     y_label_df = pd.read_csv(fp)
-#     y_label_df['Sample_ID'] = y_label_df['Sample_ID'].astype(str)
-#     y_label_df = y_label_df[y_label_df['Type'].isin(['DM1', 'Control'])].copy()
-#     return y_label_df
-# LOADS DM1 Samples only
 def load_metadata(fp):
     y_label_df = pd.read_csv(fp)
     y_label_df['Sample_ID'] = y_label_df['Sample_ID'].astype(str)
-    y_label_df = y_label_df[y_label_df['Type'] == 'DM1'].copy()
+    y_label_df = y_label_df[y_label_df['Type'].isin(['DM1', 'Control'])].copy()
     return y_label_df
+# # LOADS DM1 Samples only
+# def load_metadata(fp):
+#     y_label_df = pd.read_csv(fp)
+#     y_label_df['Sample_ID'] = y_label_df['Sample_ID'].astype(str)
+#     y_label_df = y_label_df[y_label_df['Type'] == 'DM1'].copy()
+#     return y_label_df
