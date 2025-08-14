@@ -67,11 +67,12 @@ if __name__ == '__main__':
 
     # ---- Preprocessing chains ----
     preprocess_grid = [
-        [], ['EMSC'], ['SNV'],
-        ['Normalization'], ['Second Derivative'],
-        ['EMSC', 'SNV'],
-        ['EMSC', 'SNV', 'Second Derivative'],
-        ['SNV', 'Second Derivative'],
+        [],
+    #     [], ['EMSC'], ['SNV'],
+    #     ['Normalization'], ['Second Derivative'],
+    #     ['EMSC', 'SNV'],
+    #     ['EMSC', 'SNV', 'Second Derivative'],
+    #     ['SNV', 'Second Derivative'],
     ]
 
     all_folds = []
@@ -88,7 +89,7 @@ if __name__ == '__main__':
         print(f"→ Chain: {chain_name}  (results in: {base_out})")
         folds, globals_ = run_outer_loo(
             raw_tr, y_tr_meta, raw_ex, y_ex_meta, sample_ids_ex,
-            chain, xgb_space, base_out, n_calls=25
+            chain, xgb_space, base_out, n_calls=50
         )
 
         all_folds.extend(folds)
@@ -101,17 +102,19 @@ if __name__ == '__main__':
 
         # Build y_true from fold indices (ensures order matches)
         y_true = [y_ex_meta[i] for i in df_global["fold"]]
-
+        
         # Ensemble (per-fold tuned)
-        y_ens = df_folds["fold_pred_mean"].tolist()
-        y_std = df_folds["fold_pred_std"].tolist()
+        y_ens      = df_folds["fold_pred_mean"].tolist()
+        y_ens_std  = df_folds["fold_pred_std"].tolist()
+        
+        # Global (train-only HPs; leak-free)
+        y_glob     = df_global["global_pred_mean"].tolist()
+        y_glob_std = df_global["global_pred_std"].tolist()
+        
+        # Save parity plots into chain folder (both with error bars)
+        plot_parity(f"Ensemble_{chain_name}", y_true, y_ens,  stds=y_ens_std)
+        plot_parity(f"Global_{chain_name}",   y_true, y_glob, stds=y_glob_std)
 
-        # Global (fixed HPs)
-        y_glob = df_global["global_pred_mean"].tolist()
-
-        # Save parity plots into chain folder
-        plot_parity(f"Ensemble_{chain_name}", y_true, y_ens, stds=y_std)
-        plot_parity(f"Global_{chain_name}",   y_true, y_glob)
 
         # (Optional) save chain-level CSVs
         df_folds.to_csv(os.path.join(base_out, f"{chain_name}_ensemble_folds.csv"), index=False)
