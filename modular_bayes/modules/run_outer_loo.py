@@ -42,13 +42,32 @@ def _save_model_bundle(save_path, *, preprocessor, model, params, meta=None):
         pass
 
 
+# ───────────────────────────── Helper: pick GLOBAL HPs on TRAIN ONLY ─────────────────────────────
+
+def _pick_global_hp_train_only(raw_tr, y_tr_meta, chain, xgb_space, n_calls):
+    """BayesOpt on TRAIN ONLY (GroupKFold by sample). Returns best HP tuple."""
+    y_tr = np.repeat(y_tr_meta, 9)
+    groups = np.repeat(np.arange(len(y_tr_meta)), 9)
+    res = optimize_xgb_with_cv(
+        X_pool=raw_tr,          # TRAIN ONLY
+        y_pool=y_tr,
+        groups=groups,
+        chain=chain,
+        xgb_space=xgb_space,
+        y_tr_meta=y_tr_meta,
+        y_ex_meta=None,
+        n_calls=n_calls
+    )
+    return tuple(res.x), float(res.fun)
+
+
 def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, sample_ids_ex, chain, xgb_space, base_out, n_calls=25):
     """
     Two-phase LOO:
       Phase 1 (Ensemble): per-fold BayesOpt on X_pool (train + 10/11 test); fit outer preprocessing on X_pool,
-                          transform held-out only; train with fold-optimal HPs; predict held-out.
-      Phase 2 (Global):   aggregate fold-optimal HPs across 11 folds into a global set (binned mode);
-                          re-run outer training per fold with the fixed global HPs.
+                          transform held-out only; train with fold-optimal HPs; predict held-out.  (UNCHANGED)
+      Phase 2 (Global):   pick HPs on TRAIN ONLY (no leakage), fit preprocessing on TRAIN ONLY, train ONE global model
+                          on TRAIN ONLY, then transform-only predict each external fold.  (NEW, LEAK-FREE)
     """
     os.makedirs(base_out, exist_ok=True)
 
@@ -65,9 +84,8 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, sample_ids_ex, chain, xg
 
     # For writing small collection files at the end
     ensemble_bundle_paths = []
-    global_bundle_paths = []
 
-    # ---------- PHASE 1 — Ensemble Hyperparameters (Per-Fold) ----------
+    # ---------- PHASE 1 — Ensemble Hyperparameters (Per-Fold)  (UNCHANGED) ----------
     for i in range(n_ex):
         fold_dir = os.path.join(base_out, f"fold_{i}")
         os.makedirs(fold_dir, exist_ok=True)
@@ -80,7 +98,7 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, sample_ids_ex, chain, xg
         X_hold = raw_ex[:, hold_mask]
         y_hold = y_ex_meta[i]
 
-        # Pool = train + remaining 10 test samples
+        # Pool = train + remaining 10 test samples  (leaky by design; you asked to keep this the same)
         rem_mask = ~hold_mask
         X_rem = raw_ex[:, rem_mask]
         X_pool = np.hstack([raw_tr, X_rem])
@@ -169,90 +187,70 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, sample_ids_ex, chain, xg
             'y_pred_spectra': preds.tolist()
         })
 
-    # ---------- PHASE 2 — Global Hyperparameters (Mode Across Folds) ----------
-    # Quantize floats before taking mode, so near-identical values group together
-    def _bin_hp_tuple(hp_tuple):
-        binned = []
-        for v in hp_tuple:
-            binned.append(round(v, 3) if isinstance(v, float) else v)
-        return tuple(binned)
-
-    binned = [_bin_hp_tuple(hp) for hp in hyper_list]
-    mode_hp = Counter(binned).most_common(1)[0][0]
-    mode_params = dict(zip(names, mode_hp))
+    # ---------- PHASE 2 — Global (LEAK-FREE) ----------
+    # Pick one global HP set on TRAIN ONLY
+    global_hp, _ = _pick_global_hp_train_only(raw_tr, y_tr_meta, chain, xgb_space, n_calls)
+    mode_params = dict(zip(names, global_hp))
 
     global_records = []
 
+    # Fit preprocessor on TRAIN ONLY; train ONE global model on TRAIN ONLY
+    prep_global = Preprocessing(ipls_threshold=0.2)
+    X_tr_final  = prep_global.fit_transform(raw_tr, chain, y=y_tr).T
+
+    mdl_g = XGBRegressor(
+        **mode_params,
+        tree_method='hist',
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        random_state=42, n_jobs=-1, verbosity=0, eval_metric='rmse',
+    )
+    mdl_g.fit(X_tr_final, y_tr)
+
+    # Save ONE global bundle
+    glo_dir  = os.path.join(base_out, 'global', 'models')
+    os.makedirs(glo_dir, exist_ok=True)
+    glo_path = os.path.join(glo_dir, 'global_train_only.joblib')
+    _save_model_bundle(
+        glo_path,
+        preprocessor=prep_global,
+        model=mdl_g,
+        params=mode_params,
+        meta={
+            "type": "global",
+            "chain": chain_name,
+            "target": target_name,
+            "train_size_spectra": int(X_tr_final.shape[0]),
+        }
+    )
+
+    # Predict each external fold with transform-only (no refit, no retrain)
     for i in range(n_ex):
         global_dir = os.path.join(base_out, "global", f"fold_{i}")
         os.makedirs(global_dir, exist_ok=True)
         bvvis.OUTPUT_DIR = global_dir
 
-        # Hold-out split
-        hold_mask = (ext_idx == i)
-        X_hold = raw_ex[:, hold_mask]
-        y_hold = y_ex_meta[i]
+        hold_mask   = (ext_idx == i)
+        X_hold      = raw_ex[:, hold_mask]
+        y_hold      = y_ex_meta[i]
 
-        # Pool = train + remaining 10 test samples
-        rem_mask = ~hold_mask
-        X_rem = raw_ex[:, rem_mask]
-        X_pool = np.hstack([raw_tr, X_rem])
-        y_pool = np.concatenate([y_tr, y_ex[rem_mask]])
-
-        # Outer preprocessing (global phase): fit on X_pool, transform held-out only
-        prep = Preprocessing(ipls_threshold=0.2)
-        X_train_final = prep.fit_transform(X_pool, chain, y=y_pool).T
-        X_hold_final = prep.transform(X_hold, chain).T
-
-        # Train with fixed global HPs
-        mdl_g = XGBRegressor(
-            **mode_params,
-            tree_method='hist',
-            device='cuda' if torch.cuda.is_available() else 'cpu',
-            random_state=42,
-            n_jobs=-1,
-            verbosity=0,
-            eval_metric='rmse',
-        )
-        mdl_g.fit(X_train_final, y_pool)
-
-        # Save global model bundle (preprocessor + model + params + meta)
-        glo_dir = os.path.join(global_dir, 'models')
-        glo_path = os.path.join(glo_dir, f'global_modehp_fold{i:02d}.joblib')
-        _save_model_bundle(
-            glo_path,
-            preprocessor=prep,
-            model=mdl_g,
-            params=mode_params,
-            meta={
-                "type": "global",
-                "chain": chain_name,
-                "target": target_name,
-                "fold": i,
-                "held_out": str(sample_ids_ex[i]),
-                "train_size_samples": int(X_train_final.shape[0]),
-                "train_size_spectra": int(X_train_final.shape[0]),
-            }
-        )
-        global_bundle_paths.append(glo_path)
-
-        preds = mdl_g.predict(X_hold_final)
-        avg_pred = float(np.mean(preds))
-        avg_rmse = float(np.sqrt(mean_squared_error([y_hold], [avg_pred])))
+        X_hold_final = prep_global.transform(X_hold, chain).T
+        preds        = mdl_g.predict(X_hold_final)
+        avg_pred     = float(np.mean(preds))
+        avg_rmse     = float(np.sqrt(mean_squared_error([y_hold], [avg_pred])))
 
         # Parity (global phase, per fold)
         plot_parity(f"Global_Fold_{i}_{chain_name}", [y_hold], [avg_pred])
 
-        # (Optional) global diagnostics
+        # (Optional) diagnostics (use train-only matrices to avoid leakage)
         plot_feature_importance(mdl_g, top_n=20)
-        plot_residuals(mdl_g, X_train_final, y_pool)
-        plot_shap_summary(mdl_g, X_train_final)
+        plot_residuals(mdl_g, X_tr_final, y_tr)
+        plot_shap_summary(mdl_g, X_tr_final)
 
         global_records.append({
             'fold': i,
             'held_out_sample': sample_ids_ex[i],
             'preproc': chain_name,
-            'mode_hp': mode_hp,
+            'mode_hp': tuple(mode_params[k] for k in names),
             'global_pred_mean': avg_pred,
             'global_pred_std': float(np.std(preds)),
             'global_rmse': avg_rmse,
@@ -260,11 +258,11 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, sample_ids_ex, chain, xg
             'y_pred_spectra': preds.tolist()
         })
 
-    # ---------- Small collection files (paths to all per-fold bundles) ----------
+    # ---------- Small collection files (paths to bundles) ----------
     models_root = os.path.join(base_out, "models")
     os.makedirs(models_root, exist_ok=True)
 
-    # List of ensemble bundle files for this chain
+    # List of ensemble bundle files for this chain (unchanged)
     joblib.dump(
         {
             "type": "ensemble_collection",
@@ -276,13 +274,13 @@ def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, sample_ids_ex, chain, xg
         compress=3
     )
 
-    # List of global bundle files for this chain
+    # Global collection now points to the single global bundle
     joblib.dump(
         {
             "type": "global_collection",
             "chain": chain_name,
             "target": target_name,
-            "fold_bundle_paths": global_bundle_paths,
+            "bundle_path": glo_path,
             "mode_params": mode_params
         },
         os.path.join(models_root, f"global_all_{chain_name}.joblib"),
