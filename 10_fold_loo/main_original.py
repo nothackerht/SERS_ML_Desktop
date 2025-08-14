@@ -39,12 +39,19 @@ print("CUDA Available:", torch.cuda.is_available())
 print("Device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU")
 
 # Specify the directory containing the Data and Metadata
+
 # COMBINED DATA DIRECTORY
-data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\data_combined"
-meta_data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata_combined.csv"
+# data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\data_combined"
+# meta_data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata_combined.csv"
+
 #REGULAR DATA DIRECTORY
 # data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data"
 # meta_data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata.csv"
+
+# COMBINED DATA BUT IN ORDER
+data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\data_combined"
+meta_data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata_combined_in_order.csv"
+
 method_data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\method_data.csv"
 
 output_dir = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Classification_Results"
