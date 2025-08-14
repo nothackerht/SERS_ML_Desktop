@@ -110,7 +110,18 @@ if __name__ == '__main__':
         # Global (train-only HPs; leak-free)
         y_glob     = df_global["global_pred_mean"].tolist()
         y_glob_std = df_global["global_pred_std"].tolist()
-        
+        # >>> ADD THIS BLOCK <<<
+        df_chain = pd.DataFrame({
+            "fold":        df_global["fold"].tolist(),
+            "sample_id":   df_global["held_out_sample"].tolist(),
+            "y_true":      y_true,
+            "ens_mean":    y_ens,
+            "ens_std":     y_ens_std,
+            "glob_mean":   y_glob,
+            "glob_std":    y_glob_std,
+        })
+        df_chain.to_csv(os.path.join(base_out, f"{chain_name}_final_parity_data.csv"), index=False)
+        # <<< END ADD >>>
         # Save parity plots into chain folder (both with error bars)
         plot_parity(f"Ensemble_{chain_name}", y_true, y_ens,  stds=y_ens_std)
         plot_parity(f"Global_{chain_name}",   y_true, y_glob, stds=y_glob_std)
