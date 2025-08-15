@@ -19,6 +19,14 @@ from modules.interval_shell import get_model_by_name
 from modules.data_loader import load_data, load_metadata
 from modules.preprocessing import Preprocessing
 
+def _sample_cols(sample_indices, reps=9):
+    # expand sample indices → spectrum column indices
+    return np.concatenate([np.arange(i*reps, (i+1)*reps) for i in np.asarray(sample_indices, dtype=int)])
+
+def _assert_finite(name, arr):
+    if not np.isfinite(arr).all():
+        bad = np.size(arr) - np.isfinite(arr).sum()
+        raise ValueError(f"Non-finite values in {name} (count={bad}).")
 def leave_one_out_test_evaluation(
     train_data_dir: str,
     train_meta_path: str,
