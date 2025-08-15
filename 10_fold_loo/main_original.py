@@ -11,8 +11,10 @@ Data Analysis for Surface-Enhanced Raman Spectroscopy of Muscular Dystrophy Plas
 
 
 #%% Data Loading 
-
-from modules.data_loader import load_data, load_metadata
+# New Load data
+from modules.data_loader import load_data
+# OLD LOAD DATA
+# from modules.data_loader import load_data, load_metadata
 # from modules.unsupervised_clustering import UnsupervisedClustering
 from modules.plot_spectra import create_plot
 # from modules.analysis_tools import run_analysis, run_ejcr_analysis, create_vip_plot
@@ -49,24 +51,46 @@ print("Device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else
 # meta_data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata.csv"
 
 # COMBINED DATA BUT IN ORDER
-data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\data_combined"
-meta_data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata_combined_in_order.csv"
+# data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\data_combined"
+# meta_data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata_combined_in_order.csv"
+# ── Set your new data locations here ────────────────────────────────────────
+data_directory              = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data"
+meta_data_directory         = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata.csv"
+external_test_spectra_path  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data_test_updated"
+external_test_metadata_path = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata_test_updated_in_order.csv"
+# Separate output folders for LOO results vs classification plots
+results_root = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\10_fold_results"   # For LOO outputs
+cls_output_dir = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Classification_Results"  # For classification
+
+os.makedirs(results_root, exist_ok=True)
+os.makedirs(cls_output_dir, exist_ok=True)
 
 method_data_directory = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\method_data.csv"
 
-output_dir = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Classification_Results"
-os.makedirs(output_dir, exist_ok=True)
 
 fold_log_dir = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\10_fold_results"
 
 
-# Load the Data and Metadata
-wavenumbers, averaged_spectra, all_spectra, filenames_per_column = load_data(
-    data_directory, metadata_path=meta_data_directory, return_filenames=True
+# # OLD Load the Data and Metadata
+# wavenumbers, averaged_spectra, all_spectra, filenames_per_column = load_data(
+#     data_directory, metadata_path=meta_data_directory, return_filenames=True
+# )
+
+# y_label_df = load_metadata(meta_data_directory)
+
+# NEW LOAD DATA AND METADATA
+wavenumbers, averaged_spectra, all_spectra, filenames_per_column, y_label_df = load_data(
+    data_dir=data_directory,                # your training spectra folder
+    metadata_path=meta_data_directory,      # your training metadata CSV
+    include_types=("DM1",),                 # ✅ DM1-only
+    return_filenames=True,
+    # strict=True,
+    strict=False,
+    report_samples=5                         # optional preview of alignment
 )
 
 
-y_label_df = load_metadata(meta_data_directory)
+
 
 # #%% Plot Averaged Spectral Data
 # print("Wavenumbers shape:", wavenumbers.shape)     # Expect (1731,)
@@ -983,12 +1007,12 @@ print("First 2 entries:", xgb_grid[:2])
 # # ── Models to try (include or comment out as you like) ───────────────────────
 model_list = [
     'sipls',
-    'random_forest',
-    'svr',
-    'xgboost',
-    'mlp',
-    'knn',
-    'gpr'
+    # 'random_forest',
+    # 'svr',
+    # 'xgboost',
+    # 'mlp',
+    # 'knn',
+    # 'gpr'
 ]
 
 # # =============================================================================
@@ -997,10 +1021,10 @@ model_list = [
 hyperparam_grids = {
     'sipls': [
         {'n_components': 2, 'device': 'cpu'},
-        {'n_components': 5, 'device': 'cpu'},
-        {'n_components': 5, 'device': 'cuda'},
-        {'n_components': 8, 'device': 'cpu'},
-        {'n_components': 10, 'device': 'cuda'},
+        # {'n_components': 5, 'device': 'cpu'},
+        # {'n_components': 5, 'device': 'cuda'},
+        # {'n_components': 8, 'device': 'cpu'},
+        # {'n_components': 10, 'device': 'cuda'},
     ],
     'random_forest': [
         {'n_estimators': 50, 'max_depth': 10},
@@ -1047,17 +1071,17 @@ param_grid = {
 # # ── Preprocessing chains ────────────────────────────────────────────────────
 preprocess_grid = [
     [],                    # no preprocessing
-    ['EMSC'],
-    ['IntervalPLS'],
-    ['SNV'],
-    ['SNV', 'IntervalPLS'],
-    ['Normalization', 'IntervalPLS'],
-    ['IntervalPLS', 'Normalization' ],
-    ['Second Derivative'],
-    ['EMSC', 'SNV'],
-    ['IntervalPLS','EMSC', 'SNV'],
-    ['EMSC', 'SNV', 'IntervalPLS' ],
-    ['SNV', 'Second Derivative']
+    # ['EMSC'],
+    # ['IntervalPLS'],
+    # ['SNV'],
+    # ['SNV', 'IntervalPLS'],
+    # ['Normalization', 'IntervalPLS'],
+    # ['IntervalPLS', 'Normalization' ],
+    # ['Second Derivative'],
+    # ['EMSC', 'SNV'],
+    # ['IntervalPLS','EMSC', 'SNV'],
+    # ['EMSC', 'SNV', 'IntervalPLS' ],
+    # ['SNV', 'Second Derivative']
 ]
 
 # # =============================================================================
@@ -1069,18 +1093,19 @@ targets = [
     # ("Ankle Dorsiflexion",  "ADF_pp_avg")
 ]
 
-# ── Set your new data locations here ────────────────────────────────────────
-data_directory              = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data"
-meta_data_directory         = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata.csv"
-external_test_spectra_path  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data_test_updated"
-external_test_metadata_path = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata_test_updated_in_order.csv"
-output_dir                  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\10_fold_results"
+# # ── Set your new data locations here ────────────────────────────────────────
+# data_directory              = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data"
+# meta_data_directory         = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata.csv"
+# external_test_spectra_path  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data_test_updated"
+# external_test_metadata_path = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata_test_updated_in_order.csv"
+# output_dir                  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\10_fold_results"
 
 # =============================================================================
 # Run the Leave-One-Out evaluator for each target
 # =============================================================================
 for nice_name, col in targets:
-    out_dir_col = os.path.join(output_dir, f'10_fold_LOO_{col}')
+    out_dir_col = os.path.join(results_root, f'10_fold_LOO_{col}')
+
     print(f"\n\n### Running LOO for {nice_name} ({col}) – saving to: {out_dir_col}")
     loo_df, loo_metrics = leave_one_out_test_evaluation(
         train_data_dir   = data_directory,

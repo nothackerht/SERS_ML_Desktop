@@ -87,7 +87,7 @@ def load_external(train_dir, train_meta, test_dir, test_meta):
 
 
 
-def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=25):
+def run_outer_loo(raw_tr, y_tr_meta, raw_ex, y_ex_meta, chain, n_calls=50):
     # number of external samples = total spectra / 9
     n_ex = raw_ex.shape[1] // 9
 
@@ -491,30 +491,33 @@ grouped = df_both.groupby("preproc")
 
 for preproc, group in grouped:
     group = group.sort_values("fold")
-    y_true  = group["fold"].apply(lambda i: y_ex_meta[i]).values
+    
+    # Use actual held-out sample ID (ensures correct y_true)
+    y_true = group["held_out_sample"].apply(lambda sid: float(y_ex_meta[sample_ids_ex.index(sid)])).values
+
+    # Ensemble predictions and error bars
     y_ens = group["ensemble_pred"].values
+    std_ens = group["ensemble_std"].values
+
+    # Global predictions
     y_glob = group["global_pred"].values
 
+    # Chain folder output
+    chain_dir = os.path.join(base_out, preproc if preproc else "none")
+    bvvis.OUTPUT_DIR = chain_dir
 
-    # Save both ensemble and global parity plots for this preprocessing chain
-    std_ens = group["fold_pred_std"].values
-    # Save in chain folder
-    # Set correct directory for summary plots
-    bvvis.OUTPUT_DIR = summary_dir
-    
-    # Save summary ensemble and global plots
+    # Save parity plots in chain folder
     bv_plot_parity(f"Ensemble_{preproc}", y_true, y_ens, stds=std_ens)
     bv_plot_parity(f"Global_{preproc}", y_true, y_glob)
 
-    # Copy to summary folder
-    ens_src = os.path.join(bvvis.OUTPUT_DIR, f"Ensemble_{preproc}.png")
-    glob_src = os.path.join(bvvis.OUTPUT_DIR, f"Global_{preproc}.png")
-    
+    # Copy both plots into summary directory
+    ens_src = os.path.join(chain_dir, f"Ensemble_{preproc}.png")
+    glob_src = os.path.join(chain_dir, f"Global_{preproc}.png")
+
     if os.path.exists(ens_src):
         shutil.copy(ens_src, os.path.join(summary_dir, f"Ensemble_{preproc}.png"))
     if os.path.exists(glob_src):
         shutil.copy(glob_src, os.path.join(summary_dir, f"Global_{preproc}.png"))
-
 
 # ─── Final overall global parity plot (average of all global predictions) ─────
 y_true = df_both['fold'].apply(lambda i: y_ex_meta[i]).values

@@ -65,7 +65,8 @@ def leave_one_out_test_evaluation(
         metadata_path=train_meta_path,
         include_types=include_types,
         return_filenames=False,
-        strict=True,
+        # strict=True,
+        strict=False,
         report_samples=5,      # prints a small alignment report
     )
 
@@ -75,7 +76,8 @@ def leave_one_out_test_evaluation(
         metadata_path=test_meta_path,
         include_types=include_types,
         return_filenames=False,
-        strict=True,
+        # strict=True,
+        strict=False,
         report_samples=5,
     )
 
