@@ -29,6 +29,7 @@ import matplotlib.pyplot as plt
 
 
 
+from config import USE_CONTROLS, CONTROL_LABELS  # (TYPE_COLUMN import is optional if unused)
 from modules.ten_fold_loo_shell_evaluation import leave_one_out_test_evaluation
 
 
@@ -37,6 +38,8 @@ import numpy as np
 import os
 import torch
 from itertools import product
+
+
 print("CUDA Available:", torch.cuda.is_available())
 print("Device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU")
 
@@ -57,7 +60,7 @@ print("Device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else
 data_directory              = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data"
 meta_data_directory         = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata.csv"
 external_test_spectra_path  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data_test_updated"
-external_test_metadata_path = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata_test_updated_in_order.csv"
+external_test_metadata_path = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata_test_updated.csv"
 # Separate output folders for LOO results vs classification plots
 results_root = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\10_fold_results"   # For LOO outputs
 cls_output_dir = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Classification_Results"  # For classification
@@ -79,15 +82,30 @@ fold_log_dir = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\10_fold_results"
 # y_label_df = load_metadata(meta_data_directory)
 
 # NEW LOAD DATA AND METADATA
+
+
+
+
+include_types = ("DM1",) + CONTROL_LABELS if USE_CONTROLS else ("DM1",)
+
 wavenumbers, averaged_spectra, all_spectra, filenames_per_column, y_label_df = load_data(
-    data_dir=data_directory,                # your training spectra folder
-    metadata_path=meta_data_directory,      # your training metadata CSV
-    include_types=("DM1",),                 # ✅ DM1-only
+    data_dir=data_directory,
+    metadata_path=meta_data_directory,
+    include_types=include_types,
     return_filenames=True,
-    # strict=True,
     strict=False,
-    report_samples=5                         # optional preview of alignment
+    report_samples=5
 )
+
+# --- Quick type summary after initial load ---
+type_col = 'Type'  # or import TYPE_COLUMN from config if you added it
+type_series = y_label_df[type_col].astype(str)
+
+dm1_count = (type_series == 'DM1').sum()
+ctrl_count = type_series.isin(CONTROL_LABELS).sum()
+total_rows = len(type_series)
+
+print(f"[LOAD] Total rows: {total_rows} | DM1: {dm1_count} | Controls (aliases={tuple(CONTROL_LABELS)}): {ctrl_count}")
 
 
 
@@ -1006,12 +1024,12 @@ print("First 2 entries:", xgb_grid[:2])
 
 # # ── Models to try (include or comment out as you like) ───────────────────────
 model_list = [
-    'sipls',
+    # 'sipls',
     # 'random_forest',
     # 'svr',
     # 'xgboost',
     # 'mlp',
-    # 'knn',
+    'knn',
     # 'gpr'
 ]
 
@@ -1081,7 +1099,7 @@ preprocess_grid = [
     # ['EMSC', 'SNV'],
     # ['IntervalPLS','EMSC', 'SNV'],
     # ['EMSC', 'SNV', 'IntervalPLS' ],
-    # ['SNV', 'Second Derivative']
+    ['SNV', 'Second Derivative']
 ]
 
 # # =============================================================================
@@ -1116,8 +1134,11 @@ for nice_name, col in targets:
         hyperparam_grids = hyperparam_grids,
         preprocess_grid  = preprocess_grid,
         output_dir       = out_dir_col,
-        target_column    = col
+        target_column    = col,
+        include_controls = USE_CONTROLS,
+        control_labels   = CONTROL_LABELS,  # ← tuple from config
     )
+
 
     print(f"--- {nice_name} predictions head ---")
     print(loo_df.head())

@@ -21,6 +21,7 @@ from modules.data_loader import load_data, build_finite_mask
 from modules.preprocessing import Preprocessing
 
 
+
 # ---------- helpers ----------
 def _sample_cols(sample_indices, reps=9):
     # expand sample indices → spectrum column indices
@@ -48,16 +49,20 @@ def leave_one_out_test_evaluation(
     preprocess_grid: list[list[str]],
     output_dir: str,
     target_column: str = "target_SI",
-    include_controls: bool = False,   # NEW: simple switch
+    include_controls: bool = False,
+    control_labels: tuple[str, ...] = ("Control",),  # ← accept many
 ):
+
     """
     Run 10-fold LOO over the test set. Uses the hardened data_loader to align spectra↔sample IDs.
     If include_controls=True, Controls are loaded but rows with non-finite targets are dropped automatically.
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    # ---- 1) Load aligned datasets (order-independent, ID-based) ----
-    include_types = ("DM1", "Control") if include_controls else ("DM1",)
+    include_types = ("DM1",) + (control_labels if include_controls else ())
+    print(f"[LOO] include_controls={include_controls}, control_labels={control_labels}")
+    print(f"[LOO] include_types={include_types}")
+
 
     # Training
     _, _, all_train, meta_train = load_data(
@@ -80,6 +85,9 @@ def leave_one_out_test_evaluation(
         strict=False,
         report_samples=5,
     )
+    print(f"[LOO] Loaded TRAIN rows: {len(meta_train)}; TEST rows: {len(meta_test)}")
+    print("[LOO] TRAIN types:", meta_train['Type'].value_counts(dropna=False).to_dict())
+    print("[LOO] TEST  types:", meta_test['Type'].value_counts(dropna=False).to_dict())
 
     # ---- 2) Keep only samples with finite targets (handles Controls gracefully) ----
     mask_train = build_finite_mask(meta_train, target_column)
@@ -90,15 +98,21 @@ def leave_one_out_test_evaluation(
     all_test  = all_test[:,  _cols_from_mask(mask_test)]
     meta_train = meta_train.loc[mask_train].reset_index(drop=True)
     meta_test  = meta_test.loc[mask_test].reset_index(drop=True)
+    print(f"[LOO] target_column='{target_column}'")
+    print(f"[LOO] TRAIN finite mask kept {mask_train.sum()}/{mask_train.size} rows")
+    print(f"[LOO] TEST  finite mask kept {mask_test.sum()}/{mask_test.size} rows")
+    if 'Type' in meta_train.columns:
+        print("[LOO] TRAIN kept by type:", meta_train.loc[mask_train, 'Type'].value_counts().to_dict())
+    if 'Type' in meta_test.columns:
+        print("[LOO] TEST  kept by type:", meta_test.loc[mask_test, 'Type'].value_counts().to_dict())
 
     # Consistency checks (9 spectra per sample)
     n_train = meta_train.shape[0]
     n_test  = meta_test.shape[0]
     assert all_train.shape[1] == 9 * n_train, "train spectra mismatch"
     assert all_test.shape[1]  == 9 * n_test,  "test spectra mismatch"
+    
 
-    # Group vector for test spectra (9 per sample)
-    test_groups = np.repeat(np.arange(n_test), 9)
 
     results = []
 
@@ -284,40 +298,4 @@ def leave_one_out_test_evaluation(
     return df, metrics
 
 
-# ---------- example CLI ----------
-if __name__ == "__main__":
-    # Example invocation
-    train_data_dir     = r"C:\Users\notha\Downloads\Data\data"
-    train_meta_path    = r"C:\Users\notha\Downloads\Data\y_metadata.csv"
-    test_data_dir      = r"C:\Users\notha\Downloads\Data\data_test_updated"
-    test_meta_path     = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata_test_updated_in_order.csv"
-    results_root       = r"C:\Users\notha\Downloads\Data\Results"
 
-    model_list = ['sipls']
-    hyperparam_grids = {
-        'sipls': [
-            {'n_components': 2, 'device': 'cpu'},
-            # add more if you like
-        ]
-    }
-    preprocess_grid = [[]]  # try others as needed
-    targets = [("Splicing Index", "target_SI")]
-
-    for nice_name, col in targets:
-        out_dir = os.path.join(results_root, f"10_fold_LOO_{col}")
-        os.makedirs(out_dir, exist_ok=True)
-        print(f"\n\n### Running LOO for {nice_name} ({col}) → {out_dir}")
-        loo_df, loo_metrics = leave_one_out_test_evaluation(
-            train_data_dir   = train_data_dir,
-            train_meta_path  = train_meta_path,
-            test_data_dir    = test_data_dir,
-            test_meta_path   = test_meta_path,
-            model_list       = model_list,
-            hyperparam_grids = hyperparam_grids,
-            preprocess_grid  = preprocess_grid,
-            output_dir       = out_dir,
-            target_column    = col,
-            include_controls = False,   # set True to include Controls with finite targets
-        )
-        print(f"--- {nice_name} head ---\n", loo_df.head())
-        print(f"--- {nice_name} metrics ---\n", loo_metrics)
