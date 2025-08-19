@@ -7,6 +7,7 @@ with 5-fold inner CV for hyperparameter tuning (only hyperparams, fixed preproce
 Runs each model over each preprocessing chain separately, avoiding data leakage.
 Saves per-model, per-prep, per-target .csv and parity plots (with error bars, hyperparams & prep).
 """
+from itertools import product
 # --- add right after the docstring, before importing numpy/pandas ---
 import os
 # cap nested threading to avoid MKL/OMP explosions on Windows
@@ -136,12 +137,24 @@ def leave_one_out_test_evaluation(
     assert all_train.shape[1] == 9 * n_train, "train spectra mismatch"
     assert all_test.shape[1]  == 9 * n_test,  "test spectra mismatch"
     
+    # --- iPLS hyperparam grid (tuned inside inner CV if 'IntervalPLS' is in the chain) ---
+    ipls_param_grid = [
+        # threshold mode
+        dict(n_intervals=30,  n_components=2, select_mode="threshold", threshold=0.2, top_k=None),
+        dict(n_intervals=50,  n_components=2, select_mode="threshold", threshold=0.2, top_k=None),
+        dict(n_intervals=75,  n_components=2, select_mode="threshold", threshold=0.3, top_k=None),
+        # top-k mode
+        dict(n_intervals=75,  n_components=2, select_mode="topk",      threshold=0.0, top_k=10),
+        dict(n_intervals=100, n_components=2, select_mode="topk",      threshold=0.0, top_k=15),
+        dict(n_intervals=150, n_components=2, select_mode="topk",      threshold=0.0, top_k=20),
+    ]
 
 
   
     # <<< INSERT HERE >>>
     results = []            # you already had this
     detail_rows = []        # NEW: per-fold, per-hyperparam metrics go here
+    
     # ---- 3) Outer LOO per test sample ----
     for model_name in model_list:
         for prep_chain in preprocess_grid:
@@ -174,144 +187,173 @@ def leave_one_out_test_evaluation(
                 ])
 
  
-                # ---- 4) OUTER IntervalPLS feature selection (once per outer fold) ----
-                if 'IntervalPLS' in prep_chain:
-                    # Unsupervised preprocessing first, then select intervals **in that space**
-                    prep_sel = Preprocessing()
-                    prep_sel.fit(X_raw.T, other_methods)                         # (n_features, n_spectra_total)
-                    X_outer_unsup = prep_sel.transform(X_raw.T, other_methods).T # (n_spectra_total, n_features)
-                    n_ipls = 100  # keep in sync with the call below
-                    sel = prep_sel.select_intervals_by_pls_r2(
-                        X_outer_unsup, y_vals,
-                        n_intervals=n_ipls, n_components=2, cv_folds=5, threshold=0.3
-                    )
+                          
+                # ---- 4) OUTER: build unsupervised-preprocessed matrix (no interval slicing here) ----
+                prep_sel = Preprocessing()
+                prep_sel.fit(X_raw.T, other_methods)                         # (n_features, n_spectra_total)
+                X_outer_unsup = prep_sel.transform(X_raw.T, other_methods).T # (n_spectra_total, n_features)
                 
-                    # >>> Add THIS to report how many intervals passed for this held-out sample
+                # cache for final (outer) selection per iPLS setting in this fold
+                ipls_outer_cache = {}  # key = tuple(sorted(ipls_hp.items())) -> (sel_final, n_intervals_selected, n_features_kept)
+                
+                def _get_outer_sel(ipls_hp):
+                    """Compute (and cache) the outer-fold iPLS selection for a given ipls_hp dict."""
+                    if ipls_hp is None:  # no IntervalPLS in the chain
+                        sel = np.arange(X_outer_unsup.shape[1], dtype=int)
+                        return sel, np.nan, sel.size
+                
+                    key = tuple(sorted(ipls_hp.items()))
+                    if key in ipls_outer_cache:
+                        return ipls_outer_cache[key]
+                
+                    sel = Preprocessing().select_intervals_grouped(
+                        X_outer_unsup, y_vals, groups, plot=False, **ipls_hp
+                    )
                     n_features = X_outer_unsup.shape[1]
-                    intervals  = np.array_split(np.arange(n_features), n_ipls)
-                    n_intervals_selected = sum(np.intersect1d(block, sel).size > 0 for block in intervals)
-                    sample_label = (
-                        meta_test.iloc[held_sample_idx]['Sample'] if 'Sample' in meta_test.columns
-                        else f"idx={held_sample_idx}"
-                    )
-                    print(f"[LOO] fold={fold} | held={sample_label} | prep='{'+'.join(prep_chain) or 'None'}' "
-                          f"| IntervalPLS selected {n_intervals_selected}/{n_ipls} intervals "
-                          f"({len(sel)} features).")
-                else:
-                    sel = np.arange(X_raw.shape[1], dtype=int)
-
-
-
+                    blocks = np.array_split(np.arange(n_features, dtype=int), ipls_hp["n_intervals"])
+                    n_kept = sum(np.intersect1d(b, sel).size > 0 for b in blocks)
+                    ipls_outer_cache[key] = (sel, n_kept, int(len(sel)))
+                    return ipls_outer_cache[key]
+    
+    
                 # ---- 5) Inner CV for hyperparameter tuning (parallelized) ----
-                def _evaluate_hp(hp):
-                    fold_rmses = []   # <-- was: fold_rmses, fold_r2s = []
-                    fold_r2s   = []   # initialize the second list separately
+                def _evaluate_combo(model_hp, ipls_hp):
+                    fold_rmses, fold_r2s = [], []
                     inner = GroupKFold(n_splits=5)
-                    for iti, ito in inner.split(X_raw, y_vals, groups=groups):
-                        X_tr_raw = X_raw[iti].T
-                        X_vl_raw = X_raw[ito].T
+                
+                    # small cache so we don't rescore intervals when the training groups are identical
+                    inner_sel_cache = {}  # key: (ipls_key, tuple(sorted(unique_groups_tr))) -> sel_inner
+                
+                    for iti, ito in inner.split(X_outer_unsup, y_vals, groups=groups):
+                        X_tr_unsup, X_vl_unsup = X_outer_unsup[iti], X_outer_unsup[ito]
                         y_tr, y_vl = y_vals[iti], y_vals[ito]
+                        groups_tr, groups_vl = groups[iti], groups[ito]
                 
-                        # apply only unsupervised steps
-                        prep_inner = Preprocessing()
-                        prep_inner.fit(X_tr_raw, other_methods)  # X_tr_raw is (n_features, n_spectra)
-                        Xp_tr = prep_inner.transform(X_tr_raw, other_methods).T.astype(np.float32)
-                        Xp_vl = prep_inner.transform(X_vl_raw, other_methods).T.astype(np.float32)
-
-                        # interval selection slice
-                        Xp_tr, Xp_vl = Xp_tr[:, sel], Xp_vl[:, sel]
+                        # compute / reuse inner selection on training-only, grouped by sample
+                        if 'IntervalPLS' in prep_chain and ipls_hp is not None:
+                            ipls_key = tuple(sorted(ipls_hp.items()))
+                            gsig = tuple(np.unique(groups_tr))
+                            cache_key = (ipls_key, gsig)
+                            if cache_key not in inner_sel_cache:
+                                sel_inner = Preprocessing().select_intervals_grouped(
+                                    X_tr_unsup, y_tr, groups_tr,
+                                    plot=False, **ipls_hp
+                                )
+                                inner_sel_cache[cache_key] = sel_inner
+                            else:
+                                sel_inner = inner_sel_cache[cache_key]
+                            Xp_tr = X_tr_unsup[:, sel_inner]
+                            Xp_vl = X_vl_unsup[:, sel_inner]
+                        else:
+                            Xp_tr, Xp_vl = X_tr_unsup, X_vl_unsup
                 
-                        # get model and fit
-                        mdl = get_model_by_name(model_name, **hp)
+                        # model fit/eval
+                        mdl = get_model_by_name(model_name, **model_hp)
                         y_tr_fit = y_tr.reshape(-1, 1) if model_name == 'sipls' else y_tr
-                        mdl.fit(Xp_tr, y_tr_fit.astype(np.float32))
-                
+                        mdl.fit(Xp_tr.astype(np.float32), y_tr_fit.astype(np.float32))
                         preds = mdl.predict(Xp_vl)
-                        preds = preds.ravel() if hasattr(preds, "ndim") and preds.ndim > 1 else np.ravel(preds)
+                        preds = preds.ravel() if getattr(preds, "ndim", 1) > 1 else np.ravel(preds)
                 
                         rmse, r2 = _rmse_r2_on_sample_means(y_vl, preds, reps=9)
-                        fold_rmses.append(rmse)
-                        fold_r2s.append(r2)
+                        fold_rmses.append(rmse); fold_r2s.append(r2)
                 
-                    return float(np.mean(fold_rmses)), float(np.mean(fold_r2s)), hp
-
+                    return float(np.mean(fold_rmses)), float(np.mean(fold_r2s)), model_hp, ipls_hp
                 
-                # Safer on Windows: fewer workers, use threads, and avoid nested BLAS threads
+                # ---- 5) INNER: parallel over model HP × iPLS HP (if iPLS is in the chain) ----
+                if 'IntervalPLS' in prep_chain:
+                    jobs = product(hyperparam_grids.get(model_name, []), ipls_param_grid)
+                else:
+                    jobs = ((hp, None) for hp in hyperparam_grids.get(model_name, []))
+                
                 max_workers = min(4, os.cpu_count() or 1)
                 hp_results = Parallel(n_jobs=max_workers, prefer="threads", verbose=10)(
-                    delayed(_evaluate_hp)(hp) for hp in hyperparam_grids.get(model_name, [])
+                    delayed(_evaluate_combo)(hp, ipls_hp) for hp, ipls_hp in jobs
                 )
                 if not hp_results:
                     raise ValueError(f"No hyperparameters provided for model '{model_name}'.")
-                
-                # choose best by CV RMSE
-                best_idx  = int(np.argmin([r[0] for r in hp_results]))
-                best_rmse, best_r2, best_hp = hp_results[best_idx]
 
-                # ---- 6) Retrain & evaluate EACH hyperparameter on full pool + held-out ----
+                # choose best by CV RMSE (each item is: (cv_rmse, cv_r2, model_hp, ipls_hp))
+                best_idx = int(np.argmin([r[0] for r in hp_results]))
+                best_cv_rmse, best_cv_r2, best_model_hp, best_ipls_hp = hp_results[best_idx]
+
+
+
+
+                # Compute outer selection ONCE for the best iPLS setting
+                sel_best, n_intervals_selected_best, n_features_kept_best = _get_outer_sel(best_ipls_hp)
+                if best_ipls_hp is not None:
+                    print(f"[LOO] fold={fold} | best iPLS={best_ipls_hp} | "
+                          f"kept {n_intervals_selected_best} intervals / {n_features_kept_best} features")
+
                 
+                
+                # ---- 6) Retrain & evaluate on full pool + held-out ----
                 # 6.1 unsupervised preprocessing on full pool (train + test_except_held)
                 X_full_raw = X_raw.T  # (n_features, n_spectra_total)
                 prep_full = Preprocessing()
                 prep_full.fit(X_full_raw, other_methods)
-                Xp_full_unsup = prep_full.transform(X_full_raw, other_methods)
-
+                Xp_full_unsup = prep_full.transform(X_full_raw, other_methods)   # (n_features, n_spectra_total)
                 
-                # 6.2 slice to selected intervals and transpose to samples×features
-                Xp_full_sel = Xp_full_unsup[sel, :]                          # (n_selected_features, n_spectra_total)
-                Xp_full     = Xp_full_sel.T.astype(np.float32)               # (n_spectra_total, n_selected_features)
-                
-                # 6.3 targets for full pool
+                # 6.3 targets for full pool   <-- keep this
                 y_full_input = y_vals.reshape(-1, 1).astype(np.float32) if model_name == 'sipls' else y_vals.astype(np.float32)
                 
-                # 6.4 transform held-out block the same way
-                loo_raw = all_test[:, held_cols]                             # (n_features, 9)
-                Xp_loo_unsup = prep_full.transform(loo_raw, other_methods)   # reuse params fitted on full-pool
-
-                Xp_loo_sel   = Xp_loo_unsup[sel, :]                          # (n_selected_features, 9)
-                X_loo32      = Xp_loo_sel.T.astype(np.float32)               # (9, n_selected_features)
+                # transform held-out block with *unsupervised* steps only
+                loo_raw = all_test[:, held_cols]                   # (n_features, 9)
+                Xp_loo_unsup = prep_full.transform(loo_raw, other_methods)  # (n_features, 9)
                 
-                # 6.5 final sanity checks
-                _assert_finite("Xp_full", Xp_full)
-                _assert_finite("X_loo32", X_loo32)
-                _assert_finite("y_full_input", y_full_input)
+                _assert_finite("Xp_full_unsup", Xp_full_unsup)
+                _assert_finite("Xp_loo_unsup",  Xp_loo_unsup)
+                _assert_finite("y_full_input",  y_full_input)
                 
-                # For every hyperparameter candidate:
-                for cv_rmse, cv_r2, hp in hp_results:
-                    mdl = get_model_by_name(model_name, **hp)
+                # For every (model_hp, ipls_hp) candidate:
+                for cv_rmse, cv_r2, model_hp, ipls_hp in hp_results:
+                    # get the OUTER selection for this ipls setting (cached)
+                    sel, n_intervals_selected, n_features_kept = _get_outer_sel(ipls_hp)
+                
+                    # now do the slicing per-combo  (this replaces old 6.2 and 6.4)
+                    Xp_full = Xp_full_unsup[sel, :].T.astype(np.float32)  # (n_spectra_total, n_selected_features)
+                    X_loo32 = Xp_loo_unsup[sel, :].T.astype(np.float32)   # (9, n_selected_features)
+                
+                    _assert_finite("Xp_full", Xp_full)
+                    _assert_finite("X_loo32", X_loo32)
+                
+                    mdl = get_model_by_name(model_name, **model_hp)
                     mdl.fit(Xp_full, y_full_input)
                 
-                    # re-train score (on the full pool) – report on sample means
+                    # re-train score on sample means
                     preds_full = mdl.predict(Xp_full)
-                    preds_full = preds_full.ravel() if hasattr(preds_full, "ndim") and preds_full.ndim > 1 else np.ravel(preds_full)
+                    preds_full = preds_full.ravel() if getattr(preds_full, "ndim", 1) > 1 else np.ravel(preds_full)
                     retr_rmse, retr_r2 = _rmse_r2_on_sample_means(y_vals, preds_full, reps=9)
                 
-                    # final prediction for this outer fold, this hp
+                    # held-out prediction
                     raw_preds = mdl.predict(X_loo32)
-                    raw_preds = raw_preds.ravel() if hasattr(raw_preds, "ndim") and raw_preds.ndim > 1 else np.ravel(raw_preds)
+                    raw_preds = raw_preds.ravel() if getattr(raw_preds, "ndim", 1) > 1 else np.ravel(raw_preds)
                     test_mean = float(raw_preds.mean())
                     test_true = float(meta_test[target_column].values[held_sample_idx])
                 
-                    # store per-fold, per-hp
-                    # right before detail_rows.append({...}), you already know these:
-                    # n_intervals_selected  (computed above)
-                    # len(sel)              (features kept)
-                    
+                    is_best = (model_hp == best_model_hp) and (ipls_hp == best_ipls_hp)
+                    ipls_cols = {
+                        'ipls_intervals_kept': n_intervals_selected if ipls_hp is not None else np.nan,
+                        'ipls_features_kept':  n_features_kept     if ipls_hp is not None else np.nan,
+                        'ipls_params':         json.dumps(ipls_hp) if ipls_hp is not None else "none",
+                    }
+
+                
                     detail_rows.append({
                         'fold': fold,
                         'model': model_name,
                         'preprocess': '+'.join(prep_chain),
-                        'hyperparams': json.dumps(hp),
-                        'is_best_by_cv_rmse': bool(hp == best_hp),
+                        'hyperparams': json.dumps(model_hp),
+                        'is_best_by_cv_rmse': bool(is_best),
                         'cv_rmse': cv_rmse,
                         'cv_r2':   cv_r2,
                         'retrain_rmse': retr_rmse,
                         'retrain_r2':   retr_r2,
                         'test_pred_mean': test_mean,
                         'test_true':      test_true,
-                        'ipls_intervals_kept': n_intervals_selected if 'IntervalPLS' in prep_chain else np.nan,
-                        'ipls_features_kept':  int(len(sel))        if 'IntervalPLS' in prep_chain else np.nan,
+                        **ipls_cols
                     })
+
 
 
     # ---- 7) Save detailed per-fold table ----
@@ -340,10 +382,11 @@ def leave_one_out_test_evaluation(
         })
     
     by_combo = (
-        df.groupby(['model','preprocess','hyperparams'], as_index=False)
+        df.groupby(['model','preprocess','hyperparams','ipls_params'], as_index=False)
           .apply(_final_metrics)
           .reset_index(drop=True)
     )
+
     
     # also keep a compact “best-by-CV” view (optional)
     best_by_cv = (
