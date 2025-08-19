@@ -48,6 +48,19 @@ def _cols_from_mask(mask, reps=9):
     idx = np.where(mask)[0]
     return _sample_cols(idx, reps=reps)
 
+# NEW: compute RMSE/R2 on sample-means (9 spectra per sample)
+from sklearn.metrics import mean_squared_error, r2_score
+def _rmse_r2_on_sample_means(y_true_vec, y_pred_vec, reps=9):
+    y_true_vec = np.asarray(y_true_vec).reshape(-1)
+    y_pred_vec = np.asarray(y_pred_vec).reshape(-1)
+    assert y_true_vec.size == y_pred_vec.size
+    if y_true_vec.size % reps != 0:
+        raise ValueError("Vector length must be a multiple of reps")
+    s_true = y_true_vec.reshape(-1, reps).mean(axis=1)
+    s_pred = y_pred_vec.reshape(-1, reps).mean(axis=1)
+    rmse = float(np.sqrt(mean_squared_error(s_true, s_pred)))
+    r2   = float(r2_score(s_true, s_pred))
+    return rmse, r2
 
 # ---------- main API ----------
 def leave_one_out_test_evaluation(
@@ -126,7 +139,9 @@ def leave_one_out_test_evaluation(
 
 
     results = []
-
+    # <<< INSERT HERE >>>
+    results = []            # you already had this
+    detail_rows = []        # NEW: per-fold, per-hyperparam metrics go here
     # ---- 3) Outer LOO per test sample ----
     for model_name in model_list:
         for prep_chain in preprocess_grid:
@@ -174,142 +189,155 @@ def leave_one_out_test_evaluation(
 
                 # ---- 5) Inner CV for hyperparameter tuning (parallelized) ----
                 def _evaluate_hp(hp):
-                    fold_rmses = []
+                    fold_rmses, fold_r2s = []
                     inner = GroupKFold(n_splits=5)
                     for iti, ito in inner.split(X_raw, y_vals, groups=groups):
                         X_tr_raw = X_raw[iti].T
                         X_vl_raw = X_raw[ito].T
                         y_tr, y_vl = y_vals[iti], y_vals[ito]
-
+                
                         # apply only unsupervised steps
                         Xp_tr = Preprocessing(X_tr_raw).preprocess(other_methods).T.astype(np.float32)
                         Xp_vl = Preprocessing(X_vl_raw).preprocess(other_methods).T.astype(np.float32)
-
+                
                         # interval selection slice
                         Xp_tr, Xp_vl = Xp_tr[:, sel], Xp_vl[:, sel]
-
+                
                         # get model and fit
                         mdl = get_model_by_name(model_name, **hp)
                         y_tr_fit = y_tr.reshape(-1, 1) if model_name == 'sipls' else y_tr
                         mdl.fit(Xp_tr, y_tr_fit.astype(np.float32))
-
+                
                         preds = mdl.predict(Xp_vl)
                         preds = preds.ravel() if hasattr(preds, "ndim") and preds.ndim > 1 else np.ravel(preds)
-
-                        # score on sample means
-                        s_true = y_vl.reshape(-1, 9).mean(axis=1)
-                        s_pred = preds.reshape(-1, 9).mean(axis=1)
-                        fold_rmses.append(np.sqrt(mean_squared_error(s_true, s_pred)))
-
-                    return np.mean(fold_rmses), hp
-
+                
+                        rmse, r2 = _rmse_r2_on_sample_means(y_vl, preds, reps=9)
+                        fold_rmses.append(rmse)
+                        fold_r2s.append(r2)
+                
+                    return float(np.mean(fold_rmses)), float(np.mean(fold_r2s)), hp
+                
                 # Safer on Windows: fewer workers, use threads, and avoid nested BLAS threads
                 max_workers = min(4, os.cpu_count() or 1)
                 hp_results = Parallel(n_jobs=max_workers, prefer="threads", verbose=10)(
-                    delayed(_evaluate_hp)(hp)
-                    for hp in hyperparam_grids.get(model_name, [])
+                    delayed(_evaluate_hp)(hp) for hp in hyperparam_grids.get(model_name, [])
                 )
-
                 if not hp_results:
                     raise ValueError(f"No hyperparameters provided for model '{model_name}'.")
-                best_rmse, best_hp = min(hp_results, key=lambda x: x[0])
+                
+                # choose best by CV RMSE
+                best_idx  = int(np.argmin([r[0] for r in hp_results]))
+                best_rmse, best_r2, best_hp = hp_results[best_idx]
 
-                # ---- 6) Retrain on full pool & predict the held-out 9 spectra ----
-                # 6.1 unsupervised preprocessing on full pool
+                # ---- 6) Retrain & evaluate EACH hyperparameter on full pool + held-out ----
+                
+                # 6.1 unsupervised preprocessing on full pool (train + test_except_held)
                 X_full_raw = X_raw.T
                 prep_full = Preprocessing(X_full_raw)
                 Xp_full_unsup = prep_full.preprocess(other_methods)          # (n_features, n_spectra_total)
-
+                
                 # 6.2 slice to selected intervals and transpose to samples×features
                 Xp_full_sel = Xp_full_unsup[sel, :]                          # (n_selected_features, n_spectra_total)
-                Xp_full = Xp_full_sel.T.astype(np.float32)                   # (n_spectra_total, n_selected_features)
-
-                # 6.3 target vector for full pool
+                Xp_full     = Xp_full_sel.T.astype(np.float32)               # (n_spectra_total, n_selected_features)
+                
+                # 6.3 targets for full pool
                 y_full_input = y_vals.reshape(-1, 1).astype(np.float32) if model_name == 'sipls' else y_vals.astype(np.float32)
-
-                # 6.4 transform the held-out block likewise
-                loo_raw = all_test[:, held_cols]                             # (n_features, 9)
-                prep_loo = Preprocessing(loo_raw)
+                
+                # 6.4 transform held-out block the same way
+                loo_raw   = all_test[:, held_cols]                           # (n_features, 9)
+                prep_loo  = Preprocessing(loo_raw)
                 Xp_loo_unsup = prep_loo.preprocess(other_methods)            # (n_features, 9)
-                Xp_loo_sel = Xp_loo_unsup[sel, :]                            # (n_selected_features, 9)
-                X_loo32 = Xp_loo_sel.T.astype(np.float32)                    # (9, n_selected_features)
+                Xp_loo_sel   = Xp_loo_unsup[sel, :]                          # (n_selected_features, 9)
+                X_loo32      = Xp_loo_sel.T.astype(np.float32)               # (9, n_selected_features)
+                
+                # 6.5 final sanity checks
+                _assert_finite("Xp_full", Xp_full)
+                _assert_finite("X_loo32", X_loo32)
+                _assert_finite("y_full_input", y_full_input)
+                
+                # For every hyperparameter candidate:
+                for cv_rmse, cv_r2, hp in hp_results:
+                    mdl = get_model_by_name(model_name, **hp)
+                    mdl.fit(Xp_full, y_full_input)
+                
+                    # re-train score (on the full pool) – report on sample means
+                    preds_full = mdl.predict(Xp_full)
+                    preds_full = preds_full.ravel() if hasattr(preds_full, "ndim") and preds_full.ndim > 1 else np.ravel(preds_full)
+                    retr_rmse, retr_r2 = _rmse_r2_on_sample_means(y_vals, preds_full, reps=9)
+                
+                    # final prediction for this outer fold, this hp
+                    raw_preds = mdl.predict(X_loo32)
+                    raw_preds = raw_preds.ravel() if hasattr(raw_preds, "ndim") and raw_preds.ndim > 1 else np.ravel(raw_preds)
+                    test_mean = float(raw_preds.mean())
+                    test_true = float(meta_test[target_column].values[held_sample_idx])
+                
+                    # store per-fold, per-hp
+                    detail_rows.append({
+                        'fold': fold,
+                        'model': model_name,
+                        'preprocess': '+'.join(prep_chain),
+                        'hyperparams': json.dumps(hp),
+                        'is_best_by_cv_rmse': bool(hp == best_hp),
+                        'cv_rmse': cv_rmse,
+                        'cv_r2':   cv_r2,
+                        'retrain_rmse': retr_rmse,
+                        'retrain_r2':   retr_r2,
+                        'test_pred_mean': test_mean,
+                        'test_true':      test_true
+                    })
 
-                # 6.5 final sanity (helps catch any NaN propagation)
-                _assert_finite("X_full32(final)", Xp_full)
-                _assert_finite("X_loo32(final)",  X_loo32)
-                _assert_finite("y_full_input(final)", y_full_input)
-
-                # 6.6 fit + predict
-                mdl = get_model_by_name(model_name, **best_hp)
-                mdl.fit(Xp_full, y_full_input)
-                raw_preds = mdl.predict(X_loo32)
-                raw_preds = raw_preds.ravel() if hasattr(raw_preds, "ndim") and raw_preds.ndim > 1 else np.ravel(raw_preds)
-
-                # 6.7 store mean/std of the nine predictions
-                pred_mean = raw_preds.mean()
-                pred_std  = raw_preds.std()
-
-                results.append({
-                    'fold':       fold,
-                    'model':      model_name,
-                    'preprocess': '+'.join(prep_chain),
-                    'hyperparams': best_hp,
-                    'held_out':   int(held_sample_idx),
-                    'predictions': raw_preds.tolist(),
-                    'pred_mean':  float(pred_mean),
-                    'pred_std':   float(pred_std),
-                    'true':       float(meta_test[target_column].values[held_sample_idx])
-                })
-
-    # ---- 7) Save predictions & metrics ----
-    df = pd.DataFrame(results)
-    df['hyperparams'] = df['hyperparams'].apply(json.dumps)
-    df.to_csv(os.path.join(output_dir, 'loo_predictions.csv'), index=False)
-
-    metrics = df.groupby(['model','preprocess']).apply(
-        lambda g: pd.Series({
-            'RMSE': np.sqrt(mean_squared_error(g['true'], g['pred_mean'])),
-            'R2':   r2_score(g['true'], g['pred_mean'])
+    # ---- 7) Save detailed per-fold table ----
+    df = pd.DataFrame(detail_rows)
+    df.to_csv(os.path.join(output_dir, 'loo_per_fold_all_hyperparams.csv'), index=False)
+    
+    # ---- 8) Aggregate by (model, preprocess, hyperparams) across all outer folds ----
+    def _final_metrics(group):
+        # inner-CV and retrain: mean over folds
+        cv_rmse_mean     = group['cv_rmse'].mean()
+        cv_r2_mean       = group['cv_r2'].mean()
+        retrain_rmse_mean= group['retrain_rmse'].mean()
+        retrain_r2_mean  = group['retrain_r2'].mean()
+        # final test performance: computed from held-out preds across folds
+        final_rmse = float(np.sqrt(mean_squared_error(group['test_true'].values,
+                                                      group['test_pred_mean'].values)))
+        final_r2   = float(r2_score(group['test_true'].values,
+                                    group['test_pred_mean'].values))
+        return pd.Series({
+            'cv_rmse_mean': cv_rmse_mean,
+            'cv_r2_mean':   cv_r2_mean,
+            'retrain_rmse_mean': retrain_rmse_mean,
+            'retrain_r2_mean':   retrain_r2_mean,
+            'final_rmse': final_rmse,
+            'final_r2':   final_r2
         })
+    
+    by_combo = (
+        df.groupby(['model','preprocess','hyperparams'], as_index=False)
+          .apply(_final_metrics)
+          .reset_index(drop=True)
     )
-    metrics.to_csv(os.path.join(output_dir, 'loo_metrics.csv'))
-
-    # ---- 8) Plot parity for the best preproc per model ----
-    best_per_model = (
-        metrics
-        .reset_index()
-        .sort_values(['model','RMSE'], ascending=[True,True])
-        .drop_duplicates('model', keep='first')
+    
+    # also keep a compact “best-by-CV” view (optional)
+    best_by_cv = (
+        by_combo.sort_values(['model','preprocess','cv_rmse_mean'])
+                .groupby(['model','preprocess'], as_index=False)
+                .first()
     )
+    
+    # ---- 9) Save to Excel (multiple sheets) ----
+    xlsx_path = os.path.join(output_dir, f"loo_report_{target_column}.xlsx")
+    with pd.ExcelWriter(xlsx_path, engine='xlsxwriter') as writer:
+        df.to_excel(writer,      sheet_name='per_fold', index=False)
+        by_combo.to_excel(writer, sheet_name='by_combo', index=False)
+        best_by_cv.to_excel(writer, sheet_name='best_by_cv', index=False)
+    
+    print(f"[LOO] Wrote detailed Excel report → {xlsx_path}")
+    
+    # (optional) keep a light CSV with final metrics only
+    by_combo.to_csv(os.path.join(output_dir, 'loo_metrics_by_combo.csv'), index=False)
+    
+    return df, by_combo
 
-    for _, row in best_per_model.iterrows():
-        m, prep, rmse, r2 = row['model'], row['preprocess'], row['RMSE'], row['R2']
-        grp = df[(df['model'] == m) & (df['preprocess'] == prep)]
-
-        y_true = grp['true'].values
-        y_pred = grp['pred_mean'].values
-
-        plt.figure(figsize=(6,6))
-        plt.errorbar(y_true, y_pred, yerr=grp['pred_std'], fmt='o', capsize=4)
-        mn, mx = y_true.min(), y_true.max()
-        plt.plot([mn,mx], [mn,mx], 'r--')
-
-        plt.xlabel(target_column, fontweight='bold')
-        plt.ylabel(target_column, fontweight='bold')
-        plt.title(
-            f"{m}\n"
-            f"Preproc = {prep or 'None'}\n"
-            f"Best Hyperparams: {grp['hyperparams'].mode().iloc[0]}\n"
-            f"RMSE = {rmse:.3f},  R² = {r2:.3f}",
-            fontsize=10,
-            loc='center'
-        )
-
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f"parity_{m.replace(' ','_')}.png"), dpi=300)
-        plt.close()
-
-    return df, metrics
 
 
 
