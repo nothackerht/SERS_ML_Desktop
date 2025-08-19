@@ -1024,8 +1024,8 @@ print("First 2 entries:", xgb_grid[:2])
 
 # # ── Models to try (include or comment out as you like) ───────────────────────
 model_list = [
-    'sipls',
-    # 'random_forest',
+    # 'sipls',
+    'random_forest',
     # 'svr',
     # 'xgboost',
     # 'mlp',
@@ -1045,9 +1045,9 @@ hyperparam_grids = {
         # {'n_components': 10, 'device': 'cuda'},
     ],
     'random_forest': [
-        {'n_estimators': 50, 'max_depth': 10},
+        # {'n_estimators': 50, 'max_depth': 10},
         {'n_estimators': 100, 'max_depth': None},
-        {'n_estimators': 200, 'max_depth': 20},
+        # {'n_estimators': 200, 'max_depth': 20},
     ],
     'xgboost': xgb_grid,
     #     [
@@ -1090,7 +1090,7 @@ param_grid = {
 preprocess_grid = [
     [],                    # no preprocessing
     # ['EMSC'],
-    ['IntervalPLS'],
+    # ['IntervalPLS'],
     # ['SNV'],
     # ['SNV', 'IntervalPLS'],
     # ['Normalization', 'IntervalPLS'],
