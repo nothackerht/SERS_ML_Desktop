@@ -50,7 +50,7 @@ def _cols_from_mask(mask, reps=9):
     return _sample_cols(idx, reps=reps)
 
 # NEW: compute RMSE/R2 on sample-means (9 spectra per sample)
-from sklearn.metrics import mean_squared_error, r2_score
+
 def _rmse_r2_on_sample_means(y_true_vec, y_pred_vec, reps=9):
     y_true_vec = np.asarray(y_true_vec).reshape(-1)
     y_pred_vec = np.asarray(y_pred_vec).reshape(-1)
@@ -227,8 +227,9 @@ def leave_one_out_test_evaluation(
                 def _evaluate_combo(model_hp, ipls_hp):
                     fold_rmses, fold_r2s = [], []
                     # be safe if unique groups < 5
-                    n_inner = min(5, np.unique(groups).size)
+                    n_inner = max(2, min(5, np.unique(groups).size))
                     inner = GroupKFold(n_splits=n_inner)
+
                 
                     # small cache so we don't rescore intervals when the training groups are identical
                     inner_sel_cache = {}  # key: (ipls_key, tuple(sorted(unique_groups_tr))) -> sel_inner
@@ -377,19 +378,19 @@ def leave_one_out_test_evaluation(
                     ipls_cols = {
                         'ipls_intervals_kept': n_intervals_selected if ipls_hp is not None else np.nan,
                         'ipls_features_kept':  n_features_kept     if ipls_hp is not None else np.nan,
-                        'ipls_params':         json.dumps(ipls_hp) if ipls_hp is not None else "none",
+                        'ipls_params':         json.dumps(ipls_hp, sort_keys=True) if ipls_hp is not None else "none",  # <-- add sort_keys
                     }
+
 
                 
                     detail_rows.append({
                         'fold': fold,
                         'model': model_name,
                         'preprocess': '+'.join(prep_chain),
-                        'hyperparams': json.dumps(model_hp),
+                        'hyperparams': json.dumps(model_hp, sort_keys=True),   # <-- add sort_keys
                         'is_best_by_cv_rmse': bool(is_best),
                         'cv_rmse': cv_rmse,
                         'cv_rmse_se': cv_rmse_se,
-
                         'cv_r2':   cv_r2,
                         'retrain_rmse': retr_rmse,
                         'retrain_r2':   retr_r2,
@@ -407,24 +408,27 @@ def leave_one_out_test_evaluation(
     # ---- 8) Aggregate by (model, preprocess, hyperparams) across all outer folds ----
     def _final_metrics(group):
         # inner-CV and retrain: mean over folds
-        cv_rmse_mean     = group['cv_rmse'].mean()
-        cv_r2_mean       = group['cv_r2'].mean()
-        retrain_rmse_mean= group['retrain_rmse'].mean()
-        retrain_r2_mean  = group['retrain_r2'].mean()
+        cv_rmse_mean       = group['cv_rmse'].mean()
+        cv_rmse_se_mean    = group['cv_rmse_se'].mean()   # <-- NEW
+        cv_r2_mean         = group['cv_r2'].mean()
+        retrain_rmse_mean  = group['retrain_rmse'].mean()
+        retrain_r2_mean    = group['retrain_r2'].mean()
+    
         # final test performance: computed from held-out preds across folds
         final_rmse = float(np.sqrt(mean_squared_error(group['test_true'].values,
                                                       group['test_pred_mean'].values)))
         final_r2   = float(r2_score(group['test_true'].values,
                                     group['test_pred_mean'].values))
         return pd.Series({
-            'cv_rmse_mean': cv_rmse_mean,
-            'cv_r2_mean':   cv_r2_mean,
-            'retrain_rmse_mean': retrain_rmse_mean,
-            'retrain_r2_mean':   retrain_r2_mean,
-            'final_rmse': final_rmse,
-            'final_r2':   final_r2
+            'cv_rmse_mean':        cv_rmse_mean,
+            'cv_rmse_se_mean':     cv_rmse_se_mean,   # <-- NEW
+            'cv_r2_mean':          cv_r2_mean,
+            'retrain_rmse_mean':   retrain_rmse_mean,
+            'retrain_r2_mean':     retrain_r2_mean,
+            'final_rmse':          final_rmse,
+            'final_r2':            final_r2,
         })
-    
+
     by_combo = (
         df.groupby(['model','preprocess','hyperparams','ipls_params'], as_index=False)
           .apply(_final_metrics)
