@@ -135,12 +135,15 @@ class Preprocessing:
         n_intervals=100,
         n_components=2,
         cv_folds=5,
-        select_mode="threshold",     # "threshold" or "topk"
+        select_mode="threshold",
         threshold=0.0,
         top_k=None,
         return_scores=False,
         plot=True,
+        stability_repeats=1,
+        stability_keep=0.0,   # e.g., 0.6 keeps intervals selected in ≥60% of repeats
     ):
+
         """
         Grouped iPLS scoring that avoids leakage and scores R² on sample means.
 
@@ -177,19 +180,71 @@ class Preprocessing:
         """
         n_spectra, n_features = X.shape
         intervals = np.array_split(np.arange(n_features, dtype=int), n_intervals)
+        rng = np.random.RandomState(42)
+        interval_vote = np.zeros(n_intervals, dtype=int)
+        
+        def _grouped_splits_once():
+            # Build randomized group folds by shuffling unique group labels each repeat
+            unique_groups = np.unique(groups)
+            rng.shuffle(unique_groups)
+            # assign groups to cv_folds in round-robin buckets
+            buckets = {k: [] for k in range(cv_folds)}
+            for i, g in enumerate(unique_groups):
+                buckets[i % cv_folds].append(g)
+            # yield splits
+            for k in range(cv_folds):
+                val_groups = np.array(buckets[k])
+                val_mask = np.isin(groups, val_groups)
+                train_idx = np.where(~val_mask)[0]
+                val_idx   = np.where(val_mask)[0]
+                yield train_idx, val_idx
 
-        gkf = GroupKFold(n_splits=cv_folds)
-        interval_scores = []
+        interval_scores = np.zeros(n_intervals, dtype=float)
+        
+        for rep in range(int(stability_repeats)):
+            # score each interval this repeat
+            rep_scores = []
+            for j, inds in enumerate(intervals):
+                Xi = X[:, inds]
+                fold_scores = []
+                for tr, vl in _grouped_splits_once():
+                    pls = PLSRegression(n_components=n_components)
+                    pls.fit(Xi[tr], y[tr])
+                    yhat = pls.predict(Xi[vl]).ravel()
+                    fold_scores.append(_r2_on_sample_means(y[vl], yhat, groups[vl]))
+                rep_scores.append(float(np.mean(fold_scores)))
+        
+            rep_scores = np.asarray(rep_scores)
+            interval_scores += rep_scores
+        
+            # selection in this repeat
+            if select_mode == "threshold":
+                chosen_idx = np.where(rep_scores >= threshold)[0]
+            elif select_mode == "topk":
+                k = int(top_k)
+                chosen_idx = np.argsort(rep_scores)[::-1][:k]
+            else:
+                raise ValueError("select_mode must be 'threshold' or 'topk'")
+            interval_vote[chosen_idx] += 1
+        
+        # average score across repeats
+        interval_scores /= float(stability_repeats)
+        
+        # final selection by the main rule…
+        if select_mode == "threshold":
+            chosen_idx = np.where(interval_scores >= threshold)[0]
+        elif select_mode == "topk":
+            k = int(top_k)
+            chosen_idx = np.argsort(interval_scores)[::-1][:k]
+        
+        # …and (optionally) filtered by stability frequency
+        if stability_keep > 0.0 and stability_repeats > 1:
+            keep_min = int(np.ceil(stability_keep * stability_repeats))
+            stable_idx = np.where(interval_vote >= keep_min)[0]
+            chosen_idx = np.intersect1d(chosen_idx, stable_idx, assume_unique=False)
+        
+        chosen = [intervals[i] for i in chosen_idx]
 
-        for inds in intervals:
-            Xi = X[:, inds]  # (n_spectra, len(inds))
-            fold_scores = []
-            for tr, vl in gkf.split(Xi, y, groups=groups):
-                pls = PLSRegression(n_components=n_components)
-                pls.fit(Xi[tr], y[tr])
-                yhat = pls.predict(Xi[vl]).ravel()
-                fold_scores.append(_r2_on_sample_means(y[vl], yhat, groups[vl]))
-            interval_scores.append((inds, float(np.mean(fold_scores))))
 
         # Selection policy
         if select_mode == "threshold":
