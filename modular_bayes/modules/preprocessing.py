@@ -9,35 +9,51 @@ import matplotlib as mpl
 class Preprocessing:
     def __init__(self, ipls_threshold: float = 0.0):
         self.ipls_threshold = ipls_threshold
-        self.fitted = {}  # Dictionary to store fitted parameters
+        self.fitted = {}  # stores params & masks
 
     def fit(self, spectra: np.ndarray, methods: list, y: np.ndarray = None):
-        self.fitted = {}  # Reset before each new fit
+        """Fit params for unsupervised steps and, if requested, the IntervalPLS mask.
+           NOTE: iPLS selection is done on the unsupervised-preprocessed spectra.
+        """
+        self.fitted = {}
 
+        # --- fit unsupervised pieces ---
         if 'EMSC' in methods:
             self.fitted['emsc_ref'] = np.mean(spectra, axis=1)
 
         if 'SNV' in methods:
             self.fitted['snv_mean'] = np.mean(spectra, axis=0, keepdims=True)
-            self.fitted['snv_std'] = np.std(spectra, axis=0, keepdims=True)
-
-        if 'IntervalPLS' in methods:
-            if y is None:
-                raise ValueError("`y` must be provided for IntervalPLS selection")
-            X = spectra.T
-            self.fitted['ipls_mask'] = self.select_intervals_by_pls_r2(
-                X, y, n_intervals=150, n_components=2, cv_folds=5,
-                threshold=self.ipls_threshold
-            )
+            std = np.std(spectra, axis=0, keepdims=True)
+            # avoid divide-by-zero
+            std = np.where(std == 0, 1.0, std)
+            self.fitted['snv_std'] = std
 
         if 'Normalization' in methods:
             norm = np.linalg.norm(spectra, axis=0, keepdims=True)
-            norm[norm == 0] = 1
+            norm = np.where(norm == 0, 1.0, norm)
             self.fitted['norm'] = norm
 
+        # --- build the unsupervised-preprocessed spectra for iPLS selection ---
+        unsup_methods = [m for m in methods if m in ('EMSC', 'SNV', 'Normalization', 'Second Derivative')]
+        X_unsup = self.transform(spectra.copy(), unsup_methods)  # (n_features, n_spectra)
+
+        # --- fit IntervalPLS on the same space the model will use ---
+        if 'IntervalPLS' in methods:
+            if y is None:
+                raise ValueError("`y` must be provided for IntervalPLS selection")
+            # select_intervals_by_pls_r2 expects (n_samples, n_features)
+            ipls_mask = self.select_intervals_by_pls_r2(
+                X_unsup.T, y, n_intervals=150, n_components=2, cv_folds=5,
+                threshold=self.ipls_threshold
+            )
+            self.fitted['ipls_mask'] = ipls_mask
+
     def transform(self, spectra: np.ndarray, methods: list):
+        """Apply transforms in the usual order; apply iPLS mask last."""
         if 'EMSC' in methods:
             ref = self.fitted.get('emsc_ref')
+            if ref is None:
+                raise RuntimeError("EMSC parameters not fitted. Call fit(...) first.")
             emsc_out = np.zeros_like(spectra)
             for i in range(spectra.shape[1]):
                 p = np.polyfit(ref, spectra[:, i], 1)
@@ -46,17 +62,25 @@ class Preprocessing:
 
         if 'SNV' in methods:
             mean = self.fitted.get('snv_mean')
-            std = self.fitted.get('snv_std')
+            std  = self.fitted.get('snv_std')
+            if mean is None or std is None:
+                raise RuntimeError("SNV parameters not fitted. Call fit(...) first.")
             spectra = (spectra - mean) / std
 
         if 'Normalization' in methods:
-            spectra = spectra / self.fitted['norm']
+            norm = self.fitted.get('norm')
+            if norm is None:
+                raise RuntimeError("Normalization parameters not fitted. Call fit(...) first.")
+            spectra = spectra / norm
 
         if 'Second Derivative' in methods:
             spectra = savgol_filter(spectra, window_length=11, polyorder=2, deriv=2, axis=0)
 
         if 'IntervalPLS' in methods:
             sel = self.fitted.get('ipls_mask')
+            if sel is None:
+                raise RuntimeError("IntervalPLS mask not fitted. Call fit(..., methods including 'IntervalPLS', y=...) first.")
+            sel = np.asarray(sel, dtype=int)
             spectra = spectra[sel, :]
 
         return spectra
@@ -66,14 +90,15 @@ class Preprocessing:
         return self.transform(spectra, methods)
 
     def select_intervals_by_pls_r2(self, X, y, n_intervals=150, n_components=2, cv_folds=5, threshold=0.0):
+        """Return a 1D int array of selected feature indices."""
         n_samples, n_features = X.shape
-        intervals = np.array_split(np.arange(n_features), n_intervals)
+        intervals = np.array_split(np.arange(n_features, dtype=int), n_intervals)
         selected = []
         r2_scores = []
         kf = KFold(n_splits=cv_folds, shuffle=True, random_state=42)
 
         for inds in intervals:
-            Xi = X[:, inds]
+            Xi = X[:, inds]  # (n_samples, len(inds))
             y_pred = np.zeros_like(y, dtype=float)
             for tr, va in kf.split(Xi):
                 pls = PLSRegression(n_components=n_components)
@@ -84,7 +109,7 @@ class Preprocessing:
             if r2 > threshold:
                 selected.append(inds)
 
-        # Visualization
+        # Report & visualize (closed afterwards to avoid Agg warnings)
         num_selected = len(selected)
         print(f"IntervalPLS: selected {num_selected}/{n_intervals} intervals (threshold={threshold})")
 
@@ -109,10 +134,10 @@ class Preprocessing:
         sm.set_array(r2_scores)
         fig.colorbar(sm, ax=ax_map, label='Interval R²', orientation='vertical')
         plt.tight_layout()
-        plt.show()
+        plt.close(fig)  # important for non-interactive backends
 
         if not selected:
             print("IntervalPLS: no intervals passed threshold, using full spectrum")
-            return np.arange(n_features)
+            return np.arange(n_features, dtype=int)
 
-        return np.hstack(selected)
+        return np.hstack(selected).astype(int)
