@@ -246,16 +246,7 @@ class Preprocessing:
         chosen = [intervals[i] for i in chosen_idx]
 
 
-        # Selection policy
-        if select_mode == "threshold":
-            chosen = [inds for inds, score in interval_scores if score >= threshold]
-        elif select_mode == "topk":
-            if top_k is None:
-                raise ValueError("select_mode='topk' requires top_k")
-            ranked = sorted(interval_scores, key=lambda t: t[1], reverse=True)
-            chosen = [inds for inds, _ in ranked[:int(top_k)]]
-        else:
-            raise ValueError("select_mode must be 'threshold' or 'topk'")
+
 
         num_selected = len(chosen)
         print(f"IntervalPLS(Grouped): selected {num_selected}/{n_intervals} intervals "
@@ -268,33 +259,39 @@ class Preprocessing:
 
         # optional diagnostics (closed immediately; safe for Agg)
         if plot:
-            scores_only = [s for _, s in interval_scores]
+            scores_only = interval_scores.tolist()
             fig, (ax_spec, ax_map) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-            # rough context plot (use mean spec since X is already preprocessed)
+        
             ax_spec.plot(np.arange(n_features), X.mean(axis=0), color='gray', alpha=0.8)
             for block in intervals:
                 ax_spec.axvline(block[0], color='black', linestyle='--', linewidth=0.5)
             ax_spec.set_ylabel("Mean intensity (preprocessed)")
             ax_spec.set_title("Intervals over feature axis")
-
+        
             cmap = mpl.cm.get_cmap('viridis')
-            norm = mpl.colors.Normalize(vmin=min(scores_only), vmax=max(scores_only))
-            for (inds, s) in interval_scores:
+            norm = mpl.colors.Normalize(vmin=float(np.min(interval_scores)),
+                                        vmax=float(np.max(interval_scores)))
+            for i, inds in enumerate(intervals):
+                s = float(interval_scores[i])
                 ax_map.plot(inds, np.zeros_like(inds), color=cmap(norm(s)), linewidth=4)
             ax_map.set_xlabel("Feature index")
             ax_map.set_yticks([])
             ax_map.set_ylabel("Score bands")
             ax_map.set_title("Interval-wise grouped-CV R²")
-
+        
             sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
-            sm.set_array(scores_only)
+            sm.set_array(interval_scores)
             fig.colorbar(sm, ax=ax_map, label='Grouped-CV R²', orientation='vertical')
             plt.tight_layout()
             plt.close(fig)
 
+
         if return_scores:
-            return sel, interval_scores
+            # Convert array of scores back to old format: list of (interval_indices, score)
+            interval_scores_list = [(intervals[i], float(interval_scores[i])) for i in range(n_intervals)]
+            return sel, interval_scores_list
         return sel
+
 
     def select_intervals_by_pls_r2(self, X, y, n_intervals=150, n_components=2, cv_folds=5, threshold=0.0):
         """

@@ -148,6 +148,8 @@ def leave_one_out_test_evaluation(
         dict(n_intervals=100, n_components=2, select_mode="topk",      threshold=0.0, top_k=15),
         dict(n_intervals=150, n_components=2, select_mode="topk",      threshold=0.0, top_k=20),
     ]
+    STAB_REPEATS = 5
+    STAB_KEEP    = 0.6
 
 
   
@@ -207,8 +209,13 @@ def leave_one_out_test_evaluation(
                         return ipls_outer_cache[key]
                 
                     sel = Preprocessing().select_intervals_grouped(
-                        X_outer_unsup, y_vals, groups, plot=False, **ipls_hp
+                        X_outer_unsup, y_vals, groups,
+                        plot=False,
+                        stability_repeats=STAB_REPEATS,
+                        stability_keep=STAB_KEEP,
+                        **ipls_hp
                     )
+
                     n_features = X_outer_unsup.shape[1]
                     blocks = np.array_split(np.arange(n_features, dtype=int), ipls_hp["n_intervals"])
                     n_kept = sum(np.intersect1d(b, sel).size > 0 for b in blocks)
@@ -219,7 +226,9 @@ def leave_one_out_test_evaluation(
                 # ---- 5) Inner CV for hyperparameter tuning (parallelized) ----
                 def _evaluate_combo(model_hp, ipls_hp):
                     fold_rmses, fold_r2s = [], []
-                    inner = GroupKFold(n_splits=5)
+                    # be safe if unique groups < 5
+                    n_inner = min(5, np.unique(groups).size)
+                    inner = GroupKFold(n_splits=n_inner)
                 
                     # small cache so we don't rescore intervals when the training groups are identical
                     inner_sel_cache = {}  # key: (ipls_key, tuple(sorted(unique_groups_tr))) -> sel_inner
@@ -237,7 +246,10 @@ def leave_one_out_test_evaluation(
                             if cache_key not in inner_sel_cache:
                                 sel_inner = Preprocessing().select_intervals_grouped(
                                     X_tr_unsup, y_tr, groups_tr,
-                                    plot=False, **ipls_hp
+                                    plot=False,
+                                    stability_repeats=STAB_REPEATS,
+                                    stability_keep=STAB_KEEP,
+                                    **ipls_hp
                                 )
                                 inner_sel_cache[cache_key] = sel_inner
                             else:
@@ -255,16 +267,18 @@ def leave_one_out_test_evaluation(
                         preds = preds.ravel() if getattr(preds, "ndim", 1) > 1 else np.ravel(preds)
                 
                         rmse, r2 = _rmse_r2_on_sample_means(y_vl, preds, reps=9)
-                        fold_rmses.append(rmse); fold_r2s.append(r2)
+                        fold_rmses.append(rmse)
+                        fold_r2s.append(r2)
                 
-                        
-                        return (
-                            float(np.mean(fold_rmses)),
-                            float(np.std(fold_rmses, ddof=1) / math.sqrt(len(fold_rmses))),
-                            float(np.mean(fold_r2s)),
-                            model_hp,
-                            ipls_hp,
-                        )
+                    # <-- return AFTER finishing all inner folds
+                    se = 0.0 if len(fold_rmses) <= 1 else float(np.std(fold_rmses, ddof=1) / math.sqrt(len(fold_rmses)))
+                    return (
+                        float(np.mean(fold_rmses)),
+                        se,
+                        float(np.mean(fold_r2s)),
+                        model_hp,
+                        ipls_hp,
+                    )
 
                 
                 # ---- 5) INNER: parallel over model HP × iPLS HP (if iPLS is in the chain) ----
