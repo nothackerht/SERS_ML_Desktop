@@ -138,7 +138,7 @@ def leave_one_out_test_evaluation(
     
 
 
-    results = []
+  
     # <<< INSERT HERE >>>
     results = []            # you already had this
     detail_rows = []        # NEW: per-fold, per-hyperparam metrics go here
@@ -189,7 +189,8 @@ def leave_one_out_test_evaluation(
 
                 # ---- 5) Inner CV for hyperparameter tuning (parallelized) ----
                 def _evaluate_hp(hp):
-                    fold_rmses, fold_r2s = []
+                    fold_rmses = []   # <-- was: fold_rmses, fold_r2s = []
+                    fold_r2s   = []   # initialize the second list separately
                     inner = GroupKFold(n_splits=5)
                     for iti, ito in inner.split(X_raw, y_vals, groups=groups):
                         X_tr_raw = X_raw[iti].T
@@ -216,6 +217,7 @@ def leave_one_out_test_evaluation(
                         fold_r2s.append(r2)
                 
                     return float(np.mean(fold_rmses)), float(np.mean(fold_r2s)), hp
+
                 
                 # Safer on Windows: fewer workers, use threads, and avoid nested BLAS threads
                 max_workers = min(4, os.cpu_count() or 1)
