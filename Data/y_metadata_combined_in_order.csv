@@ -1,10 +1,10 @@
 Sample_ID,Type,age at V0 (yrs),sex,target_SI,HGS_pp_avg,ADF_pp_avg
-AdCo_001,Control,37,M,,,
-AdCo_002,Control,26,M,,,
-AdCo_003,Control,52,M,,,
-AdCo_004,Control,46,M,,,
-AdCo_005,Control,41,M,,,
-AdCo_006,Control,57,M,,,
+AdCo_001,Control,37,M,0,100,100
+AdCo_002,Control,26,M,0,100,100
+AdCo_003,Control,52,M,0,100,100
+AdCo_004,Control,46,M,0,100,100
+AdCo_005,Control,41,M,0,100,100
+AdCo_006,Control,57,M,0,100,100
 DM1_002,DM1,34,F,0.42,56.68,52.2
 DM1_004,DM1,31,F,0.47,36.92,19.06
 DM1_005,DM1,43,M,0.86,22.44,9.96

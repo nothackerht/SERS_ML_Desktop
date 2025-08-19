@@ -1024,12 +1024,12 @@ print("First 2 entries:", xgb_grid[:2])
 
 # # ── Models to try (include or comment out as you like) ───────────────────────
 model_list = [
-    # 'sipls',
+    'sipls',
     # 'random_forest',
     # 'svr',
     # 'xgboost',
     # 'mlp',
-    'knn',
+    # 'knn',
     # 'gpr'
 ]
 
@@ -1089,17 +1089,17 @@ param_grid = {
 # # ── Preprocessing chains ────────────────────────────────────────────────────
 preprocess_grid = [
     [],                    # no preprocessing
-    ['EMSC'],
+    # ['EMSC'],
     ['IntervalPLS'],
-    ['SNV'],
-    ['SNV', 'IntervalPLS'],
-    ['Normalization', 'IntervalPLS'],
-    ['IntervalPLS', 'Normalization' ],
-    ['Second Derivative'],
-    ['EMSC', 'SNV'],
-    ['IntervalPLS','EMSC', 'SNV'],
-    ['EMSC', 'SNV', 'IntervalPLS' ],
-    ['SNV', 'Second Derivative']
+    # ['SNV'],
+    # ['SNV', 'IntervalPLS'],
+    # ['Normalization', 'IntervalPLS'],
+    # ['IntervalPLS', 'Normalization' ],
+    # ['Second Derivative'],
+    # ['EMSC', 'SNV'],
+    # ['IntervalPLS','EMSC', 'SNV'],
+    # ['EMSC', 'SNV', 'IntervalPLS' ],
+    # ['SNV', 'Second Derivative']
 ]
 
 # # =============================================================================

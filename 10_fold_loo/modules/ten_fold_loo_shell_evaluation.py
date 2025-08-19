@@ -173,19 +173,34 @@ def leave_one_out_test_evaluation(
                     np.repeat(np.arange(len(ti_sample_idx)) + n_train, 9)
                 ])
 
+ 
                 # ---- 4) OUTER IntervalPLS feature selection (once per outer fold) ----
                 if 'IntervalPLS' in prep_chain:
-                    X_outer = X_raw
-                    y_outer = y_vals
-                    sel = Preprocessing(X_outer).select_intervals_by_pls_r2(
-                        X_outer, y_outer,
-                        n_intervals=100,
-                        n_components=2,
-                        cv_folds=5,
-                        threshold=0.3
+                    # Unsupervised preprocessing first, then select intervals **in that space**
+                    prep_sel = Preprocessing()
+                    prep_sel.fit(X_raw.T, other_methods)                         # (n_features, n_spectra_total)
+                    X_outer_unsup = prep_sel.transform(X_raw.T, other_methods).T # (n_spectra_total, n_features)
+                    n_ipls = 100  # keep in sync with the call below
+                    sel = prep_sel.select_intervals_by_pls_r2(
+                        X_outer_unsup, y_vals,
+                        n_intervals=n_ipls, n_components=2, cv_folds=5, threshold=0.3
                     )
+                
+                    # >>> Add THIS to report how many intervals passed for this held-out sample
+                    n_features = X_outer_unsup.shape[1]
+                    intervals  = np.array_split(np.arange(n_features), n_ipls)
+                    n_intervals_selected = sum(np.intersect1d(block, sel).size > 0 for block in intervals)
+                    sample_label = (
+                        meta_test.iloc[held_sample_idx]['Sample'] if 'Sample' in meta_test.columns
+                        else f"idx={held_sample_idx}"
+                    )
+                    print(f"[LOO] fold={fold} | held={sample_label} | prep='{'+'.join(prep_chain) or 'None'}' "
+                          f"| IntervalPLS selected {n_intervals_selected}/{n_ipls} intervals "
+                          f"({len(sel)} features).")
                 else:
-                    sel = np.arange(X_raw.shape[1])
+                    sel = np.arange(X_raw.shape[1], dtype=int)
+
+
 
                 # ---- 5) Inner CV for hyperparameter tuning (parallelized) ----
                 def _evaluate_hp(hp):
@@ -198,9 +213,11 @@ def leave_one_out_test_evaluation(
                         y_tr, y_vl = y_vals[iti], y_vals[ito]
                 
                         # apply only unsupervised steps
-                        Xp_tr = Preprocessing(X_tr_raw).preprocess(other_methods).T.astype(np.float32)
-                        Xp_vl = Preprocessing(X_vl_raw).preprocess(other_methods).T.astype(np.float32)
-                
+                        prep_inner = Preprocessing()
+                        prep_inner.fit(X_tr_raw, other_methods)  # X_tr_raw is (n_features, n_spectra)
+                        Xp_tr = prep_inner.transform(X_tr_raw, other_methods).T.astype(np.float32)
+                        Xp_vl = prep_inner.transform(X_vl_raw, other_methods).T.astype(np.float32)
+
                         # interval selection slice
                         Xp_tr, Xp_vl = Xp_tr[:, sel], Xp_vl[:, sel]
                 
@@ -234,9 +251,11 @@ def leave_one_out_test_evaluation(
                 # ---- 6) Retrain & evaluate EACH hyperparameter on full pool + held-out ----
                 
                 # 6.1 unsupervised preprocessing on full pool (train + test_except_held)
-                X_full_raw = X_raw.T
-                prep_full = Preprocessing(X_full_raw)
-                Xp_full_unsup = prep_full.preprocess(other_methods)          # (n_features, n_spectra_total)
+                X_full_raw = X_raw.T  # (n_features, n_spectra_total)
+                prep_full = Preprocessing()
+                prep_full.fit(X_full_raw, other_methods)
+                Xp_full_unsup = prep_full.transform(X_full_raw, other_methods)
+
                 
                 # 6.2 slice to selected intervals and transpose to samples×features
                 Xp_full_sel = Xp_full_unsup[sel, :]                          # (n_selected_features, n_spectra_total)
@@ -246,9 +265,9 @@ def leave_one_out_test_evaluation(
                 y_full_input = y_vals.reshape(-1, 1).astype(np.float32) if model_name == 'sipls' else y_vals.astype(np.float32)
                 
                 # 6.4 transform held-out block the same way
-                loo_raw   = all_test[:, held_cols]                           # (n_features, 9)
-                prep_loo  = Preprocessing(loo_raw)
-                Xp_loo_unsup = prep_loo.preprocess(other_methods)            # (n_features, 9)
+                loo_raw = all_test[:, held_cols]                             # (n_features, 9)
+                Xp_loo_unsup = prep_full.transform(loo_raw, other_methods)   # reuse params fitted on full-pool
+
                 Xp_loo_sel   = Xp_loo_unsup[sel, :]                          # (n_selected_features, 9)
                 X_loo32      = Xp_loo_sel.T.astype(np.float32)               # (9, n_selected_features)
                 
@@ -274,6 +293,10 @@ def leave_one_out_test_evaluation(
                     test_true = float(meta_test[target_column].values[held_sample_idx])
                 
                     # store per-fold, per-hp
+                    # right before detail_rows.append({...}), you already know these:
+                    # n_intervals_selected  (computed above)
+                    # len(sel)              (features kept)
+                    
                     detail_rows.append({
                         'fold': fold,
                         'model': model_name,
@@ -285,8 +308,11 @@ def leave_one_out_test_evaluation(
                         'retrain_rmse': retr_rmse,
                         'retrain_r2':   retr_r2,
                         'test_pred_mean': test_mean,
-                        'test_true':      test_true
+                        'test_true':      test_true,
+                        'ipls_intervals_kept': n_intervals_selected if 'IntervalPLS' in prep_chain else np.nan,
+                        'ipls_features_kept':  int(len(sel))        if 'IntervalPLS' in prep_chain else np.nan,
                     })
+
 
     # ---- 7) Save detailed per-fold table ----
     df = pd.DataFrame(detail_rows)

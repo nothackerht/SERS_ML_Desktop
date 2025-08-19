@@ -3,11 +3,13 @@
 main_PCA_Classification.py
 
 Runs:
-  • Classification (PLS-DA and SVM with LOSOCV)
+  • Classification (PLS-DA and SVM with LOSOCV) on the *combined* dataset
   • PCA analyses (train-only + train→test projection overlays, with optional SI coloring)
+    on the *separate* train and test sets.
 
-Uses the same data loader and config toggles for including controls.
-Outputs are saved to `cls_output_dir` (classification) and `pca_output_dir` (PCA).
+Outputs are saved to:
+  • cls_output_dir  (classification)
+  • pca_output_dir  (PCA)
 """
 
 import os
@@ -30,16 +32,20 @@ from modules.data_loader import load_data        # robust spectra+metadata loade
 from modules.classification import Classifier    # PLS-DA & SVM LOSOCV wrappers
 from modules.unsupervised_clustering import UnsupervisedClustering
 from modules.preprocessing import Preprocessing
-from sklearn.decomposition import PCA  # <-- added
+from sklearn.decomposition import PCA  # for train→test projections
 
 # ── User paths: adjust if needed ───────────────────────────────────────────────
-# Training data
-data_directory       = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data"
-meta_data_directory  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata.csv"
+# COMBINED data (used ONLY for classification)
+classification_data_dir_combined  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\data_combined"
+classification_meta_path_combined = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata_combined_in_order.csv"
 
-# External/blind test set (for PCA projections)
-external_test_spectra_path  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data_test_updated"
-external_test_metadata_path = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata_test_updated.csv"
+# Separate TRAIN data (used by PCA)
+train_data_dir  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data"
+train_meta_path = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata.csv"
+
+# Separate TEST data (used by PCA)
+test_data_dir  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data_test_updated"
+test_meta_path = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata_test_updated.csv"
 
 # Output folders
 cls_output_dir = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Classification_Results"
@@ -47,7 +53,7 @@ pca_output_dir = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\P
 os.makedirs(cls_output_dir, exist_ok=True)
 os.makedirs(pca_output_dir, exist_ok=True)
 
-# ── Classification settings (edit as you like) ────────────────────────────────
+# ── Classification settings ───────────────────────────────────────────────────
 # PLS-DA
 plsda_preprocess   = ['SNV', 'Normalization']
 plsda_n_components = 15
@@ -103,7 +109,7 @@ def run_pca_suite(
         ['EMSC', 'Second Derivative'],
     ]
 
-    # ---- Train/Test PCA objects for train-only plots via your class ----
+    # ---- Train-only PCA via your UnsupervisedClustering helpers ----
     clustering_train = UnsupervisedClustering(meta_train, spectra_train, output_dir)
 
     for methods in preprocessing_combos:
@@ -158,42 +164,84 @@ def run_pca_suite(
         combined_meta['PC1'] = np.concatenate([train_scores[:, 0], test_scores[:, 0]])
         combined_meta['PC2'] = np.concatenate([train_scores[:, 1], test_scores[:, 1]])
 
-        # 3) Overlay colored by SI if available, otherwise by Set
+        # 3) Overlay: always show TRAIN (circles) + TEST (large stars)
+        var1 = pca.explained_variance_ratio_[0] * 100
+        var2 = pca.explained_variance_ratio_[1] * 100
+        
+        m_tr = combined_meta['Set'] == 'Train'
+        m_te = combined_meta['Set'] == 'Test'
+        
         if 'target_SI' in combined_meta.columns:
+            from matplotlib.cm import ScalarMappable
+            from matplotlib.colors import Normalize
+        
             fig, ax = plt.subplots(figsize=(12, 8))
-            sc = ax.scatter(
-                combined_meta['PC1'],
-                combined_meta['PC2'],
-                c=combined_meta['target_SI'],
-                cmap='viridis',
-                s=20,
-                alpha=0.85
+            cmap = 'viridis'
+        
+            # Train = circles (small)
+            ax.scatter(
+                combined_meta.loc[m_tr, 'PC1'],
+                combined_meta.loc[m_tr, 'PC2'],
+                c=combined_meta.loc[m_tr, 'target_SI'],
+                cmap=cmap,
+                s=28, alpha=0.80, marker='o', label='Train', zorder=2
             )
-            cbar = plt.colorbar(sc, ax=ax)
+        
+            # Test = stars (large, outlined)
+            ax.scatter(
+                combined_meta.loc[m_te, 'PC1'],
+                combined_meta.loc[m_te, 'PC2'],
+                c=combined_meta.loc[m_te, 'target_SI'],
+                cmap=cmap,
+                s=160, alpha=0.95, marker='*',
+                edgecolors='k', linewidths=0.5,
+                label='Test', zorder=3
+            )
+        
+            # Shared colorbar
+            vmin = combined_meta['target_SI'].min()
+            vmax = combined_meta['target_SI'].max()
+            sm = ScalarMappable(norm=Normalize(vmin=vmin, vmax=vmax), cmap=cmap)
+            sm.set_array([])
+            cbar = plt.colorbar(sm, ax=ax)
             cbar.set_label('DM1 Severity (Splicing Index)', fontsize=12, fontweight='bold')
-            ax.set_xlabel("PC1", fontsize=14, fontweight='bold')
-            ax.set_ylabel("PC2", fontsize=14, fontweight='bold')
+        
+            ax.set_xlabel(f"Principal Component 1 ({var1:.2f}%)", fontsize=14, fontweight='bold')
+            ax.set_ylabel(f"Principal Component 2 ({var2:.2f}%)", fontsize=14, fontweight='bold')
             ax.set_title(f"Train → Test PCA by SI — {name_part}", fontsize=16, fontweight='bold')
+            ax.legend(title='Set')
             plt.tight_layout()
             plt.savefig(os.path.join(output_dir, f"pca_train_test_overlay_by_SI_{name_part}.png"), dpi=300)
             plt.close(fig)
+        
         else:
-            # Color by set if SI isn't present
+            # Fallback: color by set (no SI)
             fig, ax = plt.subplots(figsize=(12, 8))
-            for set_name, color in [('Train', 'tab:blue'), ('Test', 'tab:orange')]:
-                mask = combined_meta['Set'] == set_name
-                ax.scatter(
-                    combined_meta.loc[mask, 'PC1'],
-                    combined_meta.loc[mask, 'PC2'],
-                    s=20, alpha=0.85, label=set_name
-                )
-            ax.set_xlabel("PC1", fontsize=14, fontweight='bold')
-            ax.set_ylabel("PC2", fontsize=14, fontweight='bold')
+        
+            ax.scatter(
+                combined_meta.loc[m_tr, 'PC1'],
+                combined_meta.loc[m_tr, 'PC2'],
+                s=28, alpha=0.85, marker='o',
+                color='tab:blue', label='Train', zorder=2
+            )
+        
+            ax.scatter(
+                combined_meta.loc[m_te, 'PC1'],
+                combined_meta.loc[m_te, 'PC2'],
+                s=160, alpha=0.95, marker='*',
+                color='tab:orange', edgecolors='k', linewidths=0.5,
+                label='Test', zorder=3
+            )
+        
+            ax.set_xlabel(f"Principal Component 1 ({var1:.2f}%)", fontsize=14, fontweight='bold')
+            ax.set_ylabel(f"Principal Component 2 ({var2:.2f}%)", fontsize=14, fontweight='bold')
             ax.set_title(f"Train → Test PCA overlay — {name_part}", fontsize=16, fontweight='bold')
-            ax.legend()
+            ax.legend(title='Set')
             plt.tight_layout()
             plt.savefig(os.path.join(output_dir, f"pca_train_test_overlay_{name_part}.png"), dpi=300)
             plt.close(fig)
+        
+
 
     print(f"[PCA] Finished. Figures saved to: {output_dir}")
 
@@ -203,48 +251,45 @@ def main():
     print(f"[CLASS] USE_CONTROLS={USE_CONTROLS} | CONTROL_LABELS={tuple(CONTROL_LABELS)}")
     print(f"[CLASS] include_types={include_types}")
 
-    # Load spectra + metadata (returns 5 items when return_filenames=True)
-    wavenumbers, averaged_spectra, all_spectra, filenames_per_column, y_label_df = load_data(
-        data_dir=data_directory,
-        metadata_path=meta_data_directory,
+    # ───────────────────────── Classification on COMBINED set ──────────────────
+    print("\n[CLASS] Loading COMBINED dataset for classification…")
+    _, _, X_combined, combined_filenames, meta_combined = load_data(
+        data_dir=classification_data_dir_combined,
+        metadata_path=classification_meta_path_combined,
         include_types=include_types,
         return_filenames=True,
         strict=False,
-        report_samples=5,   # small alignment report to console
+        report_samples=5,
     )
 
-    # Quick sanity summary of classes
-    if 'Type' not in y_label_df.columns:
-        raise KeyError("Expected a 'Type' column in metadata; available columns: "
-                       f"{list(y_label_df.columns)}")
+    if 'Type' not in meta_combined.columns:
+        raise KeyError("Expected a 'Type' column in combined metadata; "
+                       f"available columns: {list(meta_combined.columns)}")
 
-    type_series = y_label_df['Type'].astype(str)
+    type_series = meta_combined['Type'].astype(str)
     n_dm1   = (type_series == 'DM1').sum()
     n_ctrl  = type_series.isin(CONTROL_LABELS).sum()
     n_total = len(type_series)
-    print(f"[LOAD] Total rows: {n_total} | DM1: {n_dm1} | Controls (aliases={tuple(CONTROL_LABELS)}): {n_ctrl}")
+    print(f"[LOAD][COMBINED] Total rows: {n_total} | DM1: {n_dm1} | Controls (aliases={tuple(CONTROL_LABELS)}): {n_ctrl}")
 
-    # Guard: classification needs at least 2 classes
     if n_dm1 == 0 or (USE_CONTROLS and n_ctrl == 0):
-        print("[CLASS] Not enough classes for classification. "
-              "Make sure both DM1 and at least one control are included.")
+        print("[CLASS] Not enough classes in the COMBINED set for classification.")
         return
 
-    # ───────────────────────── Classification ─────────────────────────
-    clf = Classifier(all_spectra=all_spectra, y_label_df=y_label_df)
+    clf = Classifier(all_spectra=X_combined, y_label_df=meta_combined)
 
-    # PLS-DA (LOSOCV)
-    print("\n[CLASS] Running PLS-DA (LOSOCV)…")
+    # PLS-DA (LOSOCV) on COMBINED
+    print("\n[CLASS] Running PLS-DA (LOSOCV) on COMBINED…")
     roc_auc_plsda, y_test_plsda, y_pred_proba_plsda = clf.pls_da_losocv(
         preprocess_methods=plsda_preprocess,
         n_components=plsda_n_components,
         save_plots=True,
         output_dir=cls_output_dir
     )
-    print(f"[CLASS][PLS-DA] ROC AUC (LOSOCV): {roc_auc_plsda:.4f}")
+    print(f"[CLASS][PLS-DA][COMBINED] ROC AUC (LOSOCV): {roc_auc_plsda:.4f}")
 
-    # SVM (LOSOCV)
-    print("\n[CLASS] Running SVM (LOSOCV)…")
+    # SVM (LOSOCV) on COMBINED
+    print("\n[CLASS] Running SVM (LOSOCV) on COMBINED…")
     roc_auc_svm, y_test_svm, y_pred_proba_svm = clf.svm_losocv(
         preprocess_methods=svm_preprocess,
         C=svm_C,
@@ -252,10 +297,10 @@ def main():
         save_plots=True,
         output_dir=cls_output_dir
     )
-    print(f"[CLASS][SVM] ROC AUC (LOSOCV): {roc_auc_svm:.4f}")
+    print(f"[CLASS][SVM][COMBINED] ROC AUC (LOSOCV): {roc_auc_svm:.4f}")
 
-    # Save raw LOSOCV outputs
-    out_pls = os.path.join(cls_output_dir, "plsda_losocv_outputs.npz")
+    # Save raw LOSOCV outputs (tagged as combined)
+    out_pls = os.path.join(cls_output_dir, "plsda_losocv_outputs_COMBINED.npz")
     np.savez_compressed(out_pls,
         y_test=np.array(y_test_plsda),
         y_pred_proba=np.array(y_pred_proba_plsda),
@@ -263,7 +308,7 @@ def main():
     )
     print(f"[CLASS][PLS-DA] Saved raw outputs → {out_pls}")
 
-    out_svm = os.path.join(cls_output_dir, "svm_losocv_outputs.npz")
+    out_svm = os.path.join(cls_output_dir, "svm_losocv_outputs_COMBINED.npz")
     np.savez_compressed(out_svm,
         y_test=np.array(y_test_svm),
         y_pred_proba=np.array(y_pred_proba_svm),
@@ -271,13 +316,13 @@ def main():
     )
     print(f"[CLASS][SVM] Saved raw outputs → {out_svm}")
 
-    # ──────────────────────────── PCA ────────────────────────────────
-    print("\n[PCA] Running PCA analyses (train/test overlays)…")
+    # ──────────────────────────── PCA on separate sets ─────────────────────────
+    print("\n[PCA] Running PCA analyses (train/test overlays) on separate sets…")
     run_pca_suite(
-        train_data_dir=data_directory,
-        train_meta_path=meta_data_directory,
-        test_data_dir=external_test_spectra_path,
-        test_meta_path=external_test_metadata_path,
+        train_data_dir=train_data_dir,
+        train_meta_path=train_meta_path,
+        test_data_dir=test_data_dir,
+        test_meta_path=test_meta_path,
         include_types=include_types,
         output_dir=pca_output_dir
     )
