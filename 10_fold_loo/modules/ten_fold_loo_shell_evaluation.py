@@ -19,7 +19,7 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend (save-to-file only), safe with joblib
 
-
+import math
 import json
 import numpy as np
 import pandas as pd
@@ -257,7 +257,15 @@ def leave_one_out_test_evaluation(
                         rmse, r2 = _rmse_r2_on_sample_means(y_vl, preds, reps=9)
                         fold_rmses.append(rmse); fold_r2s.append(r2)
                 
-                    return float(np.mean(fold_rmses)), float(np.mean(fold_r2s)), model_hp, ipls_hp
+                        
+                        return (
+                            float(np.mean(fold_rmses)),
+                            float(np.std(fold_rmses, ddof=1) / math.sqrt(len(fold_rmses))),
+                            float(np.mean(fold_r2s)),
+                            model_hp,
+                            ipls_hp,
+                        )
+
                 
                 # ---- 5) INNER: parallel over model HP × iPLS HP (if iPLS is in the chain) ----
                 if 'IntervalPLS' in prep_chain:
@@ -271,10 +279,29 @@ def leave_one_out_test_evaluation(
                 )
                 if not hp_results:
                     raise ValueError(f"No hyperparameters provided for model '{model_name}'.")
+                    
+                # hp_results tuples: (cv_rmse, cv_rmse_se, cv_r2, model_hp, ipls_hp)
+                means = np.array([r[0] for r in hp_results], dtype=float)
+                ses   = np.array([r[1] for r in hp_results], dtype=float)
+                
+                best_mean_idx = int(np.argmin(means))
+                one_se_threshold = means[best_mean_idx] + ses[best_mean_idx]
+                
+                # candidates within one SE of the minimum
+                candidates = [i for i, m in enumerate(means) if m <= one_se_threshold]
+                
+                # tie-breaker: prefer the *simplest* iPLS (fewest features; then fewer intervals)
+                def _complexity(idx):
+                    ipls_hp = hp_results[idx][4]  # r[4] is ipls_hp
+                    sel, n_intervals_kept, n_feats_kept = _get_outer_sel(ipls_hp)
+                    # smaller is better
+                    return (n_feats_kept, 0 if np.isnan(n_intervals_kept) else int(n_intervals_kept))
+                
+                best_idx = min(candidates, key=_complexity)
+                
+                best_cv_rmse, best_cv_rmse_se, best_cv_r2, best_model_hp, best_ipls_hp = hp_results[best_idx]
 
-                # choose best by CV RMSE (each item is: (cv_rmse, cv_r2, model_hp, ipls_hp))
-                best_idx = int(np.argmin([r[0] for r in hp_results]))
-                best_cv_rmse, best_cv_r2, best_model_hp, best_ipls_hp = hp_results[best_idx]
+
 
 
 
@@ -306,7 +333,8 @@ def leave_one_out_test_evaluation(
                 _assert_finite("y_full_input",  y_full_input)
                 
                 # For every (model_hp, ipls_hp) candidate:
-                for cv_rmse, cv_r2, model_hp, ipls_hp in hp_results:
+                for cv_rmse, cv_rmse_se, cv_r2, model_hp, ipls_hp in hp_results:
+    
                     # get the OUTER selection for this ipls setting (cached)
                     sel, n_intervals_selected, n_features_kept = _get_outer_sel(ipls_hp)
                 
@@ -346,6 +374,8 @@ def leave_one_out_test_evaluation(
                         'hyperparams': json.dumps(model_hp),
                         'is_best_by_cv_rmse': bool(is_best),
                         'cv_rmse': cv_rmse,
+                        'cv_rmse_se': cv_rmse_se,
+
                         'cv_r2':   cv_r2,
                         'retrain_rmse': retr_rmse,
                         'retrain_r2':   retr_r2,
