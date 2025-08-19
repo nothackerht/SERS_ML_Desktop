@@ -7,7 +7,18 @@ with 5-fold inner CV for hyperparameter tuning (only hyperparams, fixed preproce
 Runs each model over each preprocessing chain separately, avoiding data leakage.
 Saves per-model, per-prep, per-target .csv and parity plots (with error bars, hyperparams & prep).
 """
+# --- add right after the docstring, before importing numpy/pandas ---
 import os
+# cap nested threading to avoid MKL/OMP explosions on Windows
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend (save-to-file only), safe with joblib
+
+
 import json
 import numpy as np
 import pandas as pd
@@ -153,10 +164,10 @@ def leave_one_out_test_evaluation(
                     y_outer = y_vals
                     sel = Preprocessing(X_outer).select_intervals_by_pls_r2(
                         X_outer, y_outer,
-                        n_intervals=150,
+                        n_intervals=100,
                         n_components=2,
                         cv_folds=5,
-                        threshold=0.22
+                        threshold=0.3
                     )
                 else:
                     sel = np.arange(X_raw.shape[1])
@@ -192,10 +203,13 @@ def leave_one_out_test_evaluation(
 
                     return np.mean(fold_rmses), hp
 
-                hp_results = Parallel(n_jobs=-1, verbose=10)(
+                # Safer on Windows: fewer workers, use threads, and avoid nested BLAS threads
+                max_workers = min(4, os.cpu_count() or 1)
+                hp_results = Parallel(n_jobs=max_workers, prefer="threads", verbose=10)(
                     delayed(_evaluate_hp)(hp)
                     for hp in hyperparam_grids.get(model_name, [])
                 )
+
                 if not hp_results:
                     raise ValueError(f"No hyperparameters provided for model '{model_name}'.")
                 best_rmse, best_hp = min(hp_results, key=lambda x: x[0])
@@ -293,7 +307,7 @@ def leave_one_out_test_evaluation(
 
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, f"parity_{m.replace(' ','_')}.png"), dpi=300)
-        plt.show()
+        plt.close()
 
     return df, metrics
 
