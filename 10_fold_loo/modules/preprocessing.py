@@ -107,7 +107,22 @@ class Preprocessing:
             spectra = spectra / norm
 
         if 'Second Derivative' in methods:
-            spectra = savgol_filter(spectra, window_length=11, polyorder=2, deriv=2, axis=0)
+            nfeat = spectra.shape[0]
+            polyorder = 2
+        
+            # If too few points for an SG filter of this order, just skip the derivative
+            if nfeat <= polyorder:
+                pass  # or: raise / log if you prefer
+            else:
+                # target up to 11, but never exceed nfeat and keep it odd
+                wl = min(11, nfeat)
+                if wl % 2 == 0:
+                    wl -= 1
+                # ensure wl > polyorder (minimum will be 3 for polyorder=2)
+                wl = max(wl, polyorder + 1 if (polyorder + 1) % 2 == 1 else polyorder + 2)
+        
+                spectra = savgol_filter(spectra, window_length=wl, polyorder=polyorder, deriv=2, axis=0)
+
 
         if 'IntervalPLS' in methods:
             sel = self.fitted.get('ipls_mask')

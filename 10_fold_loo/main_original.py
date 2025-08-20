@@ -1039,10 +1039,10 @@ model_list = [
 hyperparam_grids = {
     'sipls': [
         {'n_components': 2, 'device': 'cpu'},
-        # {'n_components': 5, 'device': 'cpu'},
-        # {'n_components': 5, 'device': 'cuda'},
-        # {'n_components': 8, 'device': 'cpu'},
-        # {'n_components': 10, 'device': 'cuda'},
+        {'n_components': 5, 'device': 'cpu'},
+        {'n_components': 5, 'device': 'cuda'},
+        {'n_components': 8, 'device': 'cpu'},
+        {'n_components': 10, 'device': 'cuda'},
     ],
     'random_forest': [
         # {'n_estimators': 50, 'max_depth': 10},
@@ -1088,13 +1088,13 @@ param_grid = {
 
 # # ── Preprocessing chains ────────────────────────────────────────────────────
 preprocess_grid = [
-    # [],                    # no preprocessing
+    [],                    # no preprocessing
     # ['EMSC'],
     # ['IntervalPLS'],
     # ['SNV'],
-    ['SNV', 'IntervalPLS'],
+    # ['SNV', 'IntervalPLS'],
     # ['Normalization', 'IntervalPLS'],
-    ['IntervalPLS', 'Normalization' ],
+    # ['IntervalPLS', 'Normalization' ],
     # ['Second Derivative'],
     # ['EMSC', 'SNV'],
     # ['IntervalPLS','EMSC', 'SNV'],

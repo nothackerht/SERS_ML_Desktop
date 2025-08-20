@@ -380,7 +380,9 @@ def leave_one_out_test_evaluation(
                     raw_preds = mdl.predict(X_loo32)
                     raw_preds = raw_preds.ravel() if getattr(raw_preds, "ndim", 1) > 1 else np.ravel(raw_preds)
                     test_mean = float(raw_preds.mean())
+                    test_std  = float(raw_preds.std(ddof=1))  # <-- ADD THIS (for parity error bars)
                     test_true = float(meta_test[target_column].values[held_sample_idx])
+
                 
                     is_best = (model_hp == best_model_hp) and (ipls_hp == best_ipls_hp)
                     ipls_cols = {
@@ -404,6 +406,7 @@ def leave_one_out_test_evaluation(
                         'retrain_r2':   retr_r2,
                         'test_pred_mean': test_mean,
                         'test_true':      test_true,
+                        'test_pred_std':  test_std,
                         **ipls_cols
                     })
 
@@ -505,7 +508,88 @@ def leave_one_out_test_evaluation(
                 .groupby(['model','preprocess'], as_index=False)
                 .first()
     )
+        # ===== Parity plots: best GLOBAL vs best ENSEMBLE per model =====
     
+    def _parity_plot(df_rows, title, outpath):
+        x = df_rows['test_true'].values
+        y = df_rows['test_pred_mean'].values
+        yerr = df_rows['test_pred_std'].values if 'test_pred_std' in df_rows.columns else None
+    
+        plt.figure(figsize=(6.2, 6.2))
+        plt.errorbar(x, y, yerr=yerr, fmt='o', alpha=0.85, capsize=3)
+        lo = min(np.min(x), np.min(y))
+        hi = max(np.max(x), np.max(y))
+        pad = 0.05 * (hi - lo if hi > lo else 1.0)
+        plt.plot([lo - pad, hi + pad], [lo - pad, hi + pad], 'k--', linewidth=1)
+    
+        rmse = float(np.sqrt(mean_squared_error(x, y)))
+        r2   = float(r2_score(x, y))
+    
+        plt.xlabel('True (sample mean)')
+        plt.ylabel('Predicted (sample mean ± 1 SD)')
+        plt.title(f"{title}\nRMSE={rmse:.3f}, R²={r2:.3f}")
+        plt.tight_layout()
+        plt.savefig(outpath, dpi=200)
+        plt.close()
+    
+    def _safe_name(s: str) -> str:
+        return ''.join(ch if ch.isalnum() or ch in ('-','_') else '_' for ch in s)
+    
+    # --- Best GLOBAL per model (single hyperparam set across all folds) ---
+    best_global = (
+        by_combo.sort_values(['model', 'final_rmse'])
+                .groupby('model', as_index=False)
+                .first()
+    )
+    
+    for _, row in best_global.iterrows():
+        model = row['model']
+        prep  = row['preprocess']
+        hp    = row['hyperparams']   # JSON string
+        ipls  = row['ipls_params']   # JSON string or "none"
+    
+        mask = (
+            (df['model'] == model) &
+            (df['preprocess'] == prep) &
+            (df['hyperparams'] == hp) &
+            (df['ipls_params'] == ipls)
+        )
+        pts = df.loc[mask, ['test_true','test_pred_mean','test_pred_std']].copy()
+        if pts.empty:
+            continue
+    
+        title = f"{model} • GLOBAL\nprep={prep}\nHP={hp}\niPLS={ipls}"
+        fname = f"parity_global_{_safe_name(target_column)}_{_safe_name(model)}_{_safe_name(prep)}.png"
+        outpath = os.path.join(output_dir, fname)
+        _parity_plot(pts, title, outpath)
+        print(f"[LOO] Saved parity: {outpath}")
+
+    
+    # --- Best ENSEMBLE per model (nested CV: fold-specific hyperparams) ---
+    best_ens = (
+        nested_by_combo.sort_values(['model', 'final_rmse'])
+                       .groupby('model', as_index=False)
+                       .first()
+    )
+    
+    for _, row in best_ens.iterrows():
+        model = row['model']
+        prep  = row['preprocess']
+    
+        mask = (
+            (nested_per_fold['model'] == model) &
+            (nested_per_fold['preprocess'] == prep)
+        )
+        pts = nested_per_fold.loc[mask, ['test_true','test_pred_mean','test_pred_std']].copy()
+        if pts.empty:
+            continue
+    
+        title = f"{model} • ENSEMBLE (nested)\nprep={prep}\nHP=ensemble"
+        fname = f"parity_ensemble_{_safe_name(target_column)}_{_safe_name(model)}_{_safe_name(prep)}.png"
+        outpath = os.path.join(output_dir, fname)
+        _parity_plot(pts, title, outpath)
+        print(f"[LOO] Saved parity: {outpath}")
+
     # ---- 9) Save to Excel (multiple sheets) ----
     xlsx_path = os.path.join(output_dir, f"loo_report_{target_column}.xlsx")
     with pd.ExcelWriter(xlsx_path, engine='xlsxwriter') as writer:
