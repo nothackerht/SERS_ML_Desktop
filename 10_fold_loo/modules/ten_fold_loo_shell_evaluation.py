@@ -75,7 +75,8 @@ def leave_one_out_test_evaluation(
     output_dir: str,
     target_column: str = "target_SI",
     include_controls: bool = False,
-    control_labels: tuple[str, ...] = ("Control",),  # ← accept many
+    control_labels: tuple[str, ...] = ("Control",),
+    pure_nesting: bool = True,   # <<< NEW: True = refit transforms inside inner CV (pure)
 ):
 
     """
@@ -83,6 +84,7 @@ def leave_one_out_test_evaluation(
     If include_controls=True, Controls are loaded but rows with non-finite targets are dropped automatically.
     """
     os.makedirs(output_dir, exist_ok=True)
+    print(f"[LOO] pure_nesting={pure_nesting}  (True=pipeline-style, refit transforms inside inner CV)")
 
     include_types = ("DM1",) + (control_labels if include_controls else ())
     print(f"[LOO] include_controls={include_controls}, control_labels={control_labels}")
@@ -241,31 +243,52 @@ def leave_one_out_test_evaluation(
 
                 
                     for iti, ito in inner.split(X_outer_unsup, y_vals, groups=groups):
-                        X_tr_unsup, X_vl_unsup = X_outer_unsup[iti], X_outer_unsup[ito]
                         y_tr, y_vl = y_vals[iti], y_vals[ito]
                         groups_tr, groups_vl = groups[iti], groups[ito]
+                    
+                        if pure_nesting:
+                            # Refit ALL unsupervised transforms on the inner-training spectra only
+                            prep_in = Preprocessing()
+                            prep_in.fit(X_raw[iti].T, other_methods)                     # spectra: (n_features, n_train_spectra)
+                            X_tr_unsup = prep_in.transform(X_raw[iti].T, other_methods).T  # -> (n_train_spectra, n_features')
+                            X_vl_unsup = prep_in.transform(X_raw[ito].T, other_methods).T  # -> (n_val_spectra,   n_features')
+                        else:
+                            # Not-pure: reuse the outer-fit transforms
+                            X_tr_unsup, X_vl_unsup = X_outer_unsup[iti], X_outer_unsup[ito]
+
                 
-                        # compute / reuse inner selection on training-only, grouped by sample
+                        # compute inner selection on training-only (always leakage-free)
                         if 'IntervalPLS' in prep_chain and ipls_hp is not None:
-                            ipls_key  = tuple(sorted(ipls_hp.items()))
-                            gsig      = tuple(np.unique(groups_tr))
-                            cache_key = (ipls_key, gsig)
-                        
-                            sel_inner = ipls_inner_cache.get(cache_key)
-                            if sel_inner is None:
+                            if pure_nesting:
+                                # No caching: transform basis changes with each inner training set
                                 sel_inner = Preprocessing().select_intervals_grouped(
                                     X_tr_unsup, y_tr, groups_tr,
                                     plot=False,
-                                    stability_repeats=STAB_REPEATS_INNER,  # <- INNER (cheap)
+                                    stability_repeats=STAB_REPEATS_INNER,
                                     stability_keep=STAB_KEEP,
                                     **ipls_hp
                                 )
-                                ipls_inner_cache[cache_key] = sel_inner
+                            else:
+                                # Reuse cache keyed by (ipls settings, unique groups in training) — OK because transform is fixed
+                                ipls_key  = tuple(sorted(ipls_hp.items()))
+                                gsig      = tuple(np.unique(groups_tr))
+                                cache_key = (ipls_key, gsig)
+                                sel_inner = ipls_inner_cache.get(cache_key)
+                                if sel_inner is None:
+                                    sel_inner = Preprocessing().select_intervals_grouped(
+                                        X_tr_unsup, y_tr, groups_tr,
+                                        plot=False,
+                                        stability_repeats=STAB_REPEATS_INNER,
+                                        stability_keep=STAB_KEEP,
+                                        **ipls_hp
+                                    )
+                                    ipls_inner_cache[cache_key] = sel_inner
                         
                             Xp_tr = X_tr_unsup[:, sel_inner]
                             Xp_vl = X_vl_unsup[:, sel_inner]
                         else:
                             Xp_tr, Xp_vl = X_tr_unsup, X_vl_unsup
+
 
                 
                         # model fit/eval
@@ -407,6 +430,8 @@ def leave_one_out_test_evaluation(
                         'test_pred_mean': test_mean,
                         'test_true':      test_true,
                         'test_pred_std':  test_std,
+                        'pure_nesting': bool(pure_nesting),
+
                         **ipls_cols
                     })
 
