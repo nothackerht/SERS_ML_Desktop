@@ -148,8 +148,10 @@ def leave_one_out_test_evaluation(
         dict(n_intervals=100, n_components=2, select_mode="topk",      threshold=0.0, top_k=15),
         dict(n_intervals=150, n_components=2, select_mode="topk",      threshold=0.0, top_k=20),
     ]
-    STAB_REPEATS = 5
-    STAB_KEEP    = 0.6
+    # split stability repeats: robust outer, cheap inner
+    STAB_REPEATS_OUTER = 5   # used in _get_outer_sel (outer fold selection)
+    STAB_REPEATS_INNER = 1   # used inside _evaluate_combo (inner CV scoring)
+    STAB_KEEP          = 0.6
 
 
   
@@ -203,15 +205,15 @@ def leave_one_out_test_evaluation(
                     if ipls_hp is None:  # no IntervalPLS in the chain
                         sel = np.arange(X_outer_unsup.shape[1], dtype=int)
                         return sel, np.nan, sel.size
-                
+
                     key = tuple(sorted(ipls_hp.items()))
                     if key in ipls_outer_cache:
                         return ipls_outer_cache[key]
-                
+
                     sel = Preprocessing().select_intervals_grouped(
                         X_outer_unsup, y_vals, groups,
                         plot=False,
-                        stability_repeats=STAB_REPEATS,
+                        stability_repeats=STAB_REPEATS_OUTER,
                         stability_keep=STAB_KEEP,
                         **ipls_hp
                     )
@@ -221,7 +223,12 @@ def leave_one_out_test_evaluation(
                     n_kept = sum(np.intersect1d(b, sel).size > 0 for b in blocks)
                     ipls_outer_cache[key] = (sel, n_kept, int(len(sel)))
                     return ipls_outer_cache[key]
-    
+
+                # shared across all (model_hp, ipls_hp) jobs in THIS outer fold
+                # key: (ipls_key, tuple(sorted(unique_groups_tr))) -> sel_inner
+                ipls_inner_cache = {}
+
+
     
                 # ---- 5) Inner CV for hyperparameter tuning (parallelized) ----
                 def _evaluate_combo(model_hp, ipls_hp):
@@ -231,8 +238,7 @@ def leave_one_out_test_evaluation(
                     inner = GroupKFold(n_splits=n_inner)
 
                 
-                    # small cache so we don't rescore intervals when the training groups are identical
-                    inner_sel_cache = {}  # key: (ipls_key, tuple(sorted(unique_groups_tr))) -> sel_inner
+
                 
                     for iti, ito in inner.split(X_outer_unsup, y_vals, groups=groups):
                         X_tr_unsup, X_vl_unsup = X_outer_unsup[iti], X_outer_unsup[ito]
@@ -241,24 +247,26 @@ def leave_one_out_test_evaluation(
                 
                         # compute / reuse inner selection on training-only, grouped by sample
                         if 'IntervalPLS' in prep_chain and ipls_hp is not None:
-                            ipls_key = tuple(sorted(ipls_hp.items()))
-                            gsig = tuple(np.unique(groups_tr))
+                            ipls_key  = tuple(sorted(ipls_hp.items()))
+                            gsig      = tuple(np.unique(groups_tr))
                             cache_key = (ipls_key, gsig)
-                            if cache_key not in inner_sel_cache:
+                        
+                            sel_inner = ipls_inner_cache.get(cache_key)
+                            if sel_inner is None:
                                 sel_inner = Preprocessing().select_intervals_grouped(
                                     X_tr_unsup, y_tr, groups_tr,
                                     plot=False,
-                                    stability_repeats=STAB_REPEATS,
+                                    stability_repeats=STAB_REPEATS_INNER,  # <- INNER (cheap)
                                     stability_keep=STAB_KEEP,
                                     **ipls_hp
                                 )
-                                inner_sel_cache[cache_key] = sel_inner
-                            else:
-                                sel_inner = inner_sel_cache[cache_key]
+                                ipls_inner_cache[cache_key] = sel_inner
+                        
                             Xp_tr = X_tr_unsup[:, sel_inner]
                             Xp_vl = X_vl_unsup[:, sel_inner]
                         else:
                             Xp_tr, Xp_vl = X_tr_unsup, X_vl_unsup
+
                 
                         # model fit/eval
                         mdl = get_model_by_name(model_name, **model_hp)
