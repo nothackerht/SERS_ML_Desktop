@@ -404,6 +404,61 @@ def leave_one_out_test_evaluation(
     # ---- 7) Save detailed per-fold table ----
     df = pd.DataFrame(detail_rows)
     df.to_csv(os.path.join(output_dir, 'loo_per_fold_all_hyperparams.csv'), index=False)
+    # ---- 7a) Nested-CV (per-fold best hyperparams) ----
+    # One row per (fold, model, preprocess): the combo each outer fold actually chose
+    nested_per_fold = (
+        df[df['is_best_by_cv_rmse']]
+          .copy()
+          .sort_values(['model', 'preprocess', 'fold'])
+    )
+    # ADD: sanity check (each (model, preprocess) should have exactly n_test outer folds)
+    assert not (
+        nested_per_fold.groupby(['model','preprocess'])['fold'].nunique() != n_test
+    ).any(), "Missing nested rows for some (model, preprocess)."
+    # (optional) keep a CSV for quick inspection
+    nested_per_fold.to_csv(os.path.join(output_dir, 'nested_per_fold_best_hp.csv'), index=False)
+    
+    # ---- 7b) Aggregate nested-CV across folds (one row per model+preprocess) ----
+    def _final_metrics_nested(group):
+        cv_rmse_mean      = group['cv_rmse'].mean()
+        cv_rmse_se_mean   = group['cv_rmse_se'].mean()
+        cv_r2_mean        = group['cv_r2'].mean()
+        retrain_rmse_mean = group['retrain_rmse'].mean()
+        retrain_r2_mean   = group['retrain_r2'].mean()
+        # Held-out performance: compute from per-fold held-out predictions
+        final_rmse = float(np.sqrt(mean_squared_error(group['test_true'].values,
+                                                      group['test_pred_mean'].values)))
+        final_r2   = float(r2_score(group['test_true'].values,
+                                    group['test_pred_mean'].values))
+        return pd.Series({
+            'cv_rmse_mean':        cv_rmse_mean,
+            'cv_rmse_se_mean':     cv_rmse_se_mean,
+            'cv_r2_mean':          cv_r2_mean,
+            'retrain_rmse_mean':   retrain_rmse_mean,
+            'retrain_r2_mean':     retrain_r2_mean,
+            'final_rmse':          final_rmse,
+            'final_r2':            final_r2,
+        })
+    
+    nested_by_combo = (
+        nested_per_fold
+        .groupby(['model', 'preprocess'], as_index=False)
+        .apply(_final_metrics_nested)
+        .reset_index(drop=True)
+    )
+    
+    # ---- 7c) (Nice-to-have) Which hyperparams were chosen how often? ----
+    # This helps you see stability/consistency of the fold-wise picks.
+    nested_hp_counts = (
+        nested_per_fold
+          .groupby(['model', 'preprocess', 'hyperparams', 'ipls_params'], as_index=False)
+          .size()
+          .rename(columns={'size': 'chosen_count'})
+          .sort_values(['model', 'preprocess', 'chosen_count'], ascending=[True, True, False])
+    )
+    # ADD: quick CSVs
+    nested_by_combo.to_csv(os.path.join(output_dir, 'nested_by_combo.csv'), index=False)
+    nested_hp_counts.to_csv(os.path.join(output_dir, 'nested_hp_counts.csv'), index=False)
     
     # ---- 8) Aggregate by (model, preprocess, hyperparams) across all outer folds ----
     def _final_metrics(group):
@@ -446,10 +501,16 @@ def leave_one_out_test_evaluation(
     # ---- 9) Save to Excel (multiple sheets) ----
     xlsx_path = os.path.join(output_dir, f"loo_report_{target_column}.xlsx")
     with pd.ExcelWriter(xlsx_path, engine='xlsxwriter') as writer:
-        df.to_excel(writer,      sheet_name='per_fold', index=False)
-        by_combo.to_excel(writer, sheet_name='by_combo', index=False)
-        best_by_cv.to_excel(writer, sheet_name='best_by_cv', index=False)
+        df.to_excel(writer,               sheet_name='per_fold',        index=False)
+        by_combo.to_excel(writer,         sheet_name='by_combo',        index=False)
+        best_by_cv.to_excel(writer,       sheet_name='best_by_cv',      index=False)
     
+        # NEW nested-CV sheets
+        nested_per_fold.to_excel(writer,  sheet_name='nested_per_fold', index=False)
+        nested_by_combo.to_excel(writer,  sheet_name='nested_by_combo', index=False)
+        nested_hp_counts.to_excel(writer, sheet_name='nested_hp_counts', index=False)
+    
+        
     print(f"[LOO] Wrote detailed Excel report → {xlsx_path}")
     
     # (optional) keep a light CSV with final metrics only
