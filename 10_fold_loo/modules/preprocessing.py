@@ -48,16 +48,16 @@ class Preprocessing:
         if 'EMSC' in methods:
             self.fitted['emsc_ref'] = np.mean(spectra, axis=1)
 
-        if 'SNV' in methods:
-            self.fitted['snv_mean'] = np.mean(spectra, axis=0, keepdims=True)
-            std = np.std(spectra, axis=0, keepdims=True)
-            std = np.where(std == 0, 1.0, std)  # avoid divide-by-zero
-            self.fitted['snv_std'] = std
+        # if 'SNV' in methods:
+        #     self.fitted['snv_mean'] = np.mean(spectra, axis=0, keepdims=True)
+        #     std = np.std(spectra, axis=0, keepdims=True)
+        #     std = np.where(std == 0, 1.0, std)  # avoid divide-by-zero
+        #     self.fitted['snv_std'] = std
 
-        if 'Normalization' in methods:
-            norm = np.linalg.norm(spectra, axis=0, keepdims=True)
-            norm = np.where(norm == 0, 1.0, norm)
-            self.fitted['norm'] = norm
+        # if 'Normalization' in methods:
+        #     norm = np.linalg.norm(spectra, axis=0, keepdims=True)
+        #     norm = np.where(norm == 0, 1.0, norm)
+        #     self.fitted['norm'] = norm
 
         # --- build the unsupervised-preprocessed spectra for iPLS selection ---
         unsup_methods = [m for m in methods if m in ('EMSC', 'SNV', 'Normalization', 'Second Derivative')]
@@ -96,16 +96,14 @@ class Preprocessing:
             spectra = emsc_out
 
         if 'SNV' in methods:
-            mean = self.fitted.get('snv_mean')
-            std  = self.fitted.get('snv_std')
-            if mean is None or std is None:
-                raise RuntimeError("SNV parameters not fitted. Call fit(...) first.")
+            mean = np.mean(spectra, axis=0, keepdims=True)
+            std  = np.std(spectra, axis=0, keepdims=True)
+            std  = np.where(std == 0, 1.0, std)
             spectra = (spectra - mean) / std
 
         if 'Normalization' in methods:
-            norm = self.fitted.get('norm')
-            if norm is None:
-                raise RuntimeError("Normalization parameters not fitted. Call fit(...) first.")
+            norm = np.linalg.norm(spectra, axis=0, keepdims=True)
+            norm = np.where(norm == 0, 1.0, norm)
             spectra = spectra / norm
 
         if 'Second Derivative' in methods:
