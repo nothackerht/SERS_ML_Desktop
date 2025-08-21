@@ -38,7 +38,10 @@ import numpy as np
 import os
 import torch
 from itertools import product
-
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", '1')
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 print("CUDA Available:", torch.cuda.is_available())
 print("Device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU")
@@ -1025,12 +1028,12 @@ print("First 2 entries:", xgb_grid[:2])
 # # ── Models to try (include or comment out as you like) ───────────────────────
 model_list = [
     'sipls',
-    # 'random_forest',
-    # 'svr',
-    # 'xgboost',
-    # 'mlp',
-    # 'knn',
-    # 'gpr'
+    'random_forest',
+    'svr',
+    'xgboost',
+    'mlp',
+    'knn',
+    'gpr'
 ]
 
 # # =============================================================================
@@ -1045,9 +1048,9 @@ hyperparam_grids = {
         {'n_components': 10, 'device': 'cuda'},
     ],
     'random_forest': [
-        # {'n_estimators': 50, 'max_depth': 10},
-        {'n_estimators': 100, 'max_depth': None},
-        # {'n_estimators': 200, 'max_depth': 20},
+        {'n_estimators': 50,  'max_depth': 10,   'n_jobs': 1},
+        {'n_estimators': 100, 'max_depth': None, 'n_jobs': 1},
+        {'n_estimators': 200, 'max_depth': 20,   'n_jobs': 1},
     ],
     'xgboost': xgb_grid,
     #     [
@@ -1066,9 +1069,9 @@ hyperparam_grids = {
         {'hidden_layer_sizes': (100,100), 'max_iter': 1000},
     ],
     'knn': [
-        {'n_neighbors': 3},
-        {'n_neighbors': 5},
-        {'n_neighbors': 7},
+        {'n_neighbors': 3, 'n_jobs': 1},
+        {'n_neighbors': 5, 'n_jobs': 1},
+        {'n_neighbors': 7, 'n_jobs': 1},
     ],
     'gpr': [
         {'alpha': 1e-10},
@@ -1089,17 +1092,17 @@ param_grid = {
 # # ── Preprocessing chains ────────────────────────────────────────────────────
 preprocess_grid = [
     [],                    # no preprocessing
-    # ['EMSC'],
-    # ['IntervalPLS'],
-    # ['SNV'],
-    # ['SNV', 'IntervalPLS'],
-    # ['Normalization', 'IntervalPLS'],
-    # ['IntervalPLS', 'Normalization' ],
-    # ['Second Derivative'],
-    # ['EMSC', 'SNV'],
-    # ['IntervalPLS','EMSC', 'SNV'],
-    # ['EMSC', 'SNV', 'IntervalPLS' ],
-    # ['SNV', 'Second Derivative']
+    ['EMSC'],
+    ['IntervalPLS'],
+    ['SNV'],
+    ['SNV', 'IntervalPLS'],
+    ['Normalization', 'IntervalPLS'],
+    ['IntervalPLS', 'Normalization' ],
+    ['Second Derivative'],
+    ['EMSC', 'SNV'],
+    ['IntervalPLS','EMSC', 'SNV'],
+    ['EMSC', 'SNV', 'IntervalPLS' ],
+    ['SNV', 'Second Derivative']
 ]
 
 # # =============================================================================
@@ -1136,8 +1139,10 @@ for nice_name, col in targets:
         output_dir       = out_dir_col,
         target_column    = col,
         include_controls = USE_CONTROLS,
-        control_labels   = CONTROL_LABELS,  # ← tuple from config
+        control_labels   = CONTROL_LABELS,
+        pure_nesting     = True,      # ← turn off inner refits of unsupervised steps
     )
+
 
 
     print(f"--- {nice_name} predictions head ---")

@@ -32,6 +32,15 @@ from modules.interval_shell import get_model_by_name
 from modules.data_loader import load_data, build_finite_mask
 from modules.preprocessing import Preprocessing
 
+# --- performance knobs (put near the top, after imports) ---
+import tempfile, psutil, gc
+
+LOGICAL_CORES = os.cpu_count() or 32
+PHYSICAL_CORES = getattr(psutil, "cpu_count", lambda logical=False: None)(logical=False) or max(1, LOGICAL_CORES // 2)
+
+# Use ~75% of logical cores for CPU models; small pool for GPU XGB
+WORKERS_CPU = min(24, max(4, LOGICAL_CORES - LOGICAL_CORES // 4))   # e.g. 32 -> 24
+WORKERS_XGB = 2
 
 
 # ---------- helpers ----------
@@ -62,6 +71,79 @@ def _rmse_r2_on_sample_means(y_true_vec, y_pred_vec, reps=9):
     rmse = float(np.sqrt(mean_squared_error(s_true, s_pred)))
     r2   = float(r2_score(s_true, s_pred))
     return rmse, r2
+# ---------- model cache helpers ----------
+import hashlib, joblib
+from datetime import datetime
+
+def _canonicalize_params(d: dict) -> dict:
+    """Sort keys and normalize types for stable hashing."""
+    import numpy as _np
+    def canon(x):
+        if isinstance(x, dict):
+            return {k: canon(x[k]) for k in sorted(x)}
+        if isinstance(x, (list, tuple)):
+            return [canon(v) for v in x]
+        if isinstance(x, _np.ndarray):
+            return x.tolist()
+        return x
+    return canon(d)
+
+def _split_fingerprint(train_sample_tags) -> str:
+    """
+    Stable fingerprint for the *outer-fold* training set.
+    `train_sample_tags` should be a list like [('tr', 0), ... , ('te', 3)].
+    """
+    s = "|".join(f"{a}:{b}" for a, b in sorted(train_sample_tags))
+    return hashlib.md5(s.encode("utf-8")).hexdigest()[:12]
+
+def _sel_signature(sel_indices: np.ndarray) -> str:
+    """Compact signature of the selected feature indices (iPLS result)."""
+    h = hashlib.md5(sel_indices.astype(np.int64).tobytes()).hexdigest()
+    return h[:12]
+
+def _cache_key(*, model_name: str, params: dict, preprocess: list[str],
+               target_col: str, train_fp: str, sel_sig: str) -> str:
+    payload = {
+        "model": model_name,
+        "params": _canonicalize_params(params),
+        "preprocess": list(preprocess or []),
+        "target": target_col,
+        "train_fp": train_fp,
+        "sel_sig": sel_sig,
+        "sklearn": __import__("sklearn").__version__,
+    }
+    s = json.dumps(payload, sort_keys=True)
+    return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+def _bundle_path(cache_dir: str, key: str, suffix: str = "joblib") -> str:
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, f"{key}.{suffix}")
+
+def save_model_bundle(cache_dir: str, key: str, *, preprocessor, model, meta: dict | None = None):
+    bundle = {
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "preprocessor": preprocessor,
+        "model": model,
+        "meta": meta or {},
+    }
+    joblib.dump(bundle, _bundle_path(cache_dir, key), compress=3)
+
+    # If XGBoost, also persist Booster to JSON for cross-version robustness
+    try:
+        if hasattr(model, "get_booster"):
+            booster = model.get_booster()
+            booster.save_model(_bundle_path(cache_dir, key + "_booster", "json"))
+    except Exception:
+        pass
+
+def load_model_bundle_if_exists(cache_dir: str, key: str):
+    p = _bundle_path(cache_dir, key)
+    if os.path.exists(p):
+        try:
+            return joblib.load(p)
+        except Exception:
+            return None
+    return None
 
 # ---------- main API ----------
 def leave_one_out_test_evaluation(
@@ -77,14 +159,25 @@ def leave_one_out_test_evaluation(
     include_controls: bool = False,
     control_labels: tuple[str, ...] = ("Control",),
     pure_nesting: bool = True,   # <<< NEW: True = refit transforms inside inner CV (pure)
+
 ):
 
     """
     Run 10-fold LOO over the test set. Uses the hardened data_loader to align spectra↔sample IDs.
     If include_controls=True, Controls are loaded but rows with non-finite targets are dropped automatically.
     """
+    # Set up output + caches
     os.makedirs(output_dir, exist_ok=True)
     print(f"[LOO] pure_nesting={pure_nesting}  (True=pipeline-style, refit transforms inside inner CV)")
+
+    # model cache lives under this LOO output folder
+    CACHE_DIR = os.path.join(output_dir, "_model_cache")
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
+    # joblib memmap folder lives under the same output_dir
+    JOBLIB_TEMP_DIR = os.path.join(output_dir, "_joblib_tmp")
+    os.makedirs(JOBLIB_TEMP_DIR, exist_ok=True)
+    os.environ.setdefault("JOBLIB_TEMP_FOLDER", JOBLIB_TEMP_DIR)
 
     include_types = ("DM1",) + (control_labels if include_controls else ())
     print(f"[LOO] include_controls={include_controls}, control_labels={control_labels}")
@@ -176,6 +269,11 @@ def leave_one_out_test_evaluation(
                 # Columns for all *other* test samples
                 ti_sample_idx = np.setdiff1d(np.arange(n_test), [held_sample_idx])
                 ti_cols = _sample_cols(ti_sample_idx)
+                # Build a stable tag list for this fold's training samples:
+                #  - all training samples (tag 'tr', indices 0..n_train-1)
+                #  - all test samples EXCEPT the held one (tag 'te', using ti_sample_idx)
+                train_sample_tags = [('tr', int(i)) for i in range(n_train)] + [('te', int(i)) for i in ti_sample_idx]
+                train_fp = _split_fingerprint(train_sample_tags)  # e.g., 'a1b2c3d4e5f6'
 
                 # ---- Build combined pool (train + test_except_held) ----
                 # X_raw: rows = spectra, cols = wavenumbers
@@ -319,13 +417,29 @@ def leave_one_out_test_evaluation(
                 else:
                     jobs = ((hp, None) for hp in hyperparam_grids.get(model_name, []))
                 
-                max_workers = min(4, os.cpu_count() or 1)
-                hp_results = Parallel(n_jobs=max_workers, prefer="threads", verbose=10)(
+                # Resolve joblib temp folder under this run's output_dir
+                joblib_tmp = globals().get("JOBLIB_TEMP_DIR") or os.path.join(output_dir, "_joblib_tmp")
+                os.makedirs(joblib_tmp, exist_ok=True)
+                
+                # Choose workers based on model type (constants defined near imports)
+                _total = LOGICAL_CORES
+                max_workers = WORKERS_XGB if model_name == "xgboost" else WORKERS_CPU
+                
+                # Processes + memmap for big arrays -> faster & lower RAM duplication
+                hp_results = Parallel(
+                    n_jobs=max_workers,
+                    backend="loky",
+                    verbose=10,
+                    max_nbytes="256M",          # memmap arrays larger than 256MB
+                    temp_folder=joblib_tmp,
+                    mmap_mode="r",
+                )(
                     delayed(_evaluate_combo)(hp, ipls_hp) for hp, ipls_hp in jobs
                 )
+                
                 if not hp_results:
                     raise ValueError(f"No hyperparameters provided for model '{model_name}'.")
-                    
+                
                 # hp_results tuples: (cv_rmse, cv_rmse_se, cv_r2, model_hp, ipls_hp)
                 means = np.array([r[0] for r in hp_results], dtype=float)
                 ses   = np.array([r[1] for r in hp_results], dtype=float)
@@ -346,19 +460,13 @@ def leave_one_out_test_evaluation(
                 best_idx = min(candidates, key=_complexity)
                 
                 best_cv_rmse, best_cv_rmse_se, best_cv_r2, best_model_hp, best_ipls_hp = hp_results[best_idx]
-
-
-
-
-
-
+                
                 # Compute outer selection ONCE for the best iPLS setting
                 sel_best, n_intervals_selected_best, n_features_kept_best = _get_outer_sel(best_ipls_hp)
                 if best_ipls_hp is not None:
                     print(f"[LOO] fold={fold} | best iPLS={best_ipls_hp} | "
                           f"kept {n_intervals_selected_best} intervals / {n_features_kept_best} features")
 
-                
                 
                 # ---- 6) Retrain & evaluate on full pool + held-out ----
                 # 6.1 unsupervised preprocessing on full pool (train + test_except_held)
@@ -380,47 +488,79 @@ def leave_one_out_test_evaluation(
                 
                 # For every (model_hp, ipls_hp) candidate:
                 for cv_rmse, cv_rmse_se, cv_r2, model_hp, ipls_hp in hp_results:
-    
+
                     # get the OUTER selection for this ipls setting (cached)
                     sel, n_intervals_selected, n_features_kept = _get_outer_sel(ipls_hp)
-                
-                    # now do the slicing per-combo  (this replaces old 6.2 and 6.4)
+
+                    # now do the slicing per-combo
                     Xp_full = Xp_full_unsup[sel, :].T.astype(np.float32)  # (n_spectra_total, n_selected_features)
                     X_loo32 = Xp_loo_unsup[sel, :].T.astype(np.float32)   # (9, n_selected_features)
-                
+
                     _assert_finite("Xp_full", Xp_full)
                     _assert_finite("X_loo32", X_loo32)
-                
-                    mdl = get_model_by_name(model_name, **model_hp)
-                    mdl.fit(Xp_full, y_full_input)
-                
-                    # re-train score on sample means
+
+                    # ----- CACHE LOOKUP -----
+                    sel_sig = _sel_signature(sel.astype(np.int64))
+                    cache_key = _cache_key(
+                        model_name=model_name,
+                        params=model_hp,
+                        preprocess=prep_chain,
+                        target_col=target_column,
+                        train_fp=train_fp,
+                        sel_sig=sel_sig,
+                    )
+
+                    bundle = load_model_bundle_if_exists(CACHE_DIR, cache_key)
+                    if bundle is None:
+                        # fit fresh
+                        mdl = get_model_by_name(model_name, **model_hp)
+                        mdl.fit(Xp_full, y_full_input)
+
+                        # Save fitted preprocessor & model (preprocessor here is the OUTER-FULL one)
+                        save_model_bundle(
+                            CACHE_DIR, cache_key,
+                            preprocessor=prep_full,
+                            model=mdl,
+                            meta={
+                                "model": model_name,
+                                "params": _canonicalize_params(model_hp),
+                                "preprocess": list(prep_chain),
+                                "target": target_column,
+                                "train_fp": train_fp,
+                                "sel_sig": sel_sig,
+                                "ipls_params": (json.dumps(ipls_hp, sort_keys=True) if ipls_hp is not None else "none"),
+                                "n_features_kept": int(n_features_kept),
+                                "n_intervals_kept": (int(n_intervals_selected) if ipls_hp is not None else None),
+                            }
+                        )
+                    else:
+                        mdl = bundle["model"]
+                        # Note: you *could* also reuse bundle["preprocessor"], but we already applied `prep_full` above.
+
+                    # re-train score on sample means (if bundle existed, this uses cached mdl)
                     preds_full = mdl.predict(Xp_full)
                     preds_full = preds_full.ravel() if getattr(preds_full, "ndim", 1) > 1 else np.ravel(preds_full)
                     retr_rmse, retr_r2 = _rmse_r2_on_sample_means(y_vals, preds_full, reps=9)
-                
+
                     # held-out prediction
                     raw_preds = mdl.predict(X_loo32)
                     raw_preds = raw_preds.ravel() if getattr(raw_preds, "ndim", 1) > 1 else np.ravel(raw_preds)
                     test_mean = float(raw_preds.mean())
-                    test_std  = float(raw_preds.std(ddof=1))  # <-- ADD THIS (for parity error bars)
+                    test_std  = float(raw_preds.std(ddof=1))
                     test_true = float(meta_test[target_column].values[held_sample_idx])
 
-                
                     is_best = (model_hp == best_model_hp) and (ipls_hp == best_ipls_hp)
                     ipls_cols = {
                         'ipls_intervals_kept': n_intervals_selected if ipls_hp is not None else np.nan,
                         'ipls_features_kept':  n_features_kept     if ipls_hp is not None else np.nan,
-                        'ipls_params':         json.dumps(ipls_hp, sort_keys=True) if ipls_hp is not None else "none",  # <-- add sort_keys
+                        'ipls_params':         json.dumps(ipls_hp, sort_keys=True) if ipls_hp is not None else "none",
                     }
 
-
-                
                     detail_rows.append({
                         'fold': fold,
                         'model': model_name,
                         'preprocess': '+'.join(prep_chain),
-                        'hyperparams': json.dumps(model_hp, sort_keys=True),   # <-- add sort_keys
+                        'hyperparams': json.dumps(model_hp, sort_keys=True),
                         'is_best_by_cv_rmse': bool(is_best),
                         'cv_rmse': cv_rmse,
                         'cv_rmse_se': cv_rmse_se,
@@ -431,9 +571,9 @@ def leave_one_out_test_evaluation(
                         'test_true':      test_true,
                         'test_pred_std':  test_std,
                         'pure_nesting': bool(pure_nesting),
-
                         **ipls_cols
                     })
+
 
 
 

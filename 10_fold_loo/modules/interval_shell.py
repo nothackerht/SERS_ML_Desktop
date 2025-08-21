@@ -14,7 +14,7 @@ from sklearn.svm import SVR
 from sklearn.neural_network import MLPRegressor
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.gaussian_process import GaussianProcessRegressor
-import xgboost as xgb
+from xgboost import XGBRegressor   # <-- ADD this import
 
 from modules.torch_pls import TorchPLS
 
@@ -38,27 +38,33 @@ def get_model_by_name(model_name: str, **kwargs):
         )
         device = kwargs.pop('device', 'cpu')
         return TorchPLS(n_components=n_comp, device=device, **kwargs)
-
+    # --- Random Forest: force single-thread to avoid nested parallelism ---
     elif name == 'random_forest':
         return RandomForestRegressor(
             n_estimators=kwargs.pop('n_estimators', 100),
             max_depth=kwargs.pop('max_depth', None),
             random_state=kwargs.pop('random_state', 42),
-            n_jobs=kwargs.pop('n_jobs', -1),
+            n_jobs=kwargs.pop('n_jobs', 1),          # CHANGED: was -1 or missing
             **kwargs
         )
 
+
+    # --- XGBoost: keep GPU + single-thread per fit ---
     elif name == 'xgboost':
-        # Keep GPU-friendly defaults; allow overrides
-        return xgb.XGBRegressor(
+        return XGBRegressor(
             n_estimators=kwargs.pop('n_estimators', 100),
-            max_depth=kwargs.pop('max_depth', 6),
             learning_rate=kwargs.pop('learning_rate', 0.1),
-            objective=kwargs.pop('objective', 'reg:squarederror'),
-            random_state=kwargs.pop('random_state', 42),
-            n_jobs=kwargs.pop('n_jobs', 1),            # avoid nested threading with joblib
+            max_depth=kwargs.pop('max_depth', 6),
+            min_child_weight=kwargs.pop('min_child_weight', 1),
+            gamma=kwargs.pop('gamma', 0.0),
+            subsample=kwargs.pop('subsample', 1.0),
+            colsample_bytree=kwargs.pop('colsample_bytree', 1.0),
+            reg_alpha=kwargs.pop('reg_alpha', 0.0),
+            reg_lambda=kwargs.pop('reg_lambda', 1.0),
+            n_jobs=kwargs.pop('n_jobs', 1),          # ENSURE 1
             tree_method=kwargs.pop('tree_method', 'gpu_hist'),
             predictor=kwargs.pop('predictor', 'gpu_predictor'),
+            random_state=kwargs.pop('random_state', 42),
             **kwargs
         )
 
@@ -80,11 +86,13 @@ def get_model_by_name(model_name: str, **kwargs):
             **kwargs
         )
 
+    # --- KNN: also force single-thread (sklearn >=1.4 supports n_jobs) ---
     elif name == 'knn':
         return KNeighborsRegressor(
             n_neighbors=kwargs.pop('n_neighbors', 5),
             weights=kwargs.pop('weights', 'uniform'),
             algorithm=kwargs.pop('algorithm', 'auto'),
+            n_jobs=kwargs.pop('n_jobs', 1),          # ADDED
             **kwargs
         )
 
