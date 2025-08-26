@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Thu Aug 21 15:34:22 2025
-
-@author: spect
-"""
-
 # modules/interval_selectors.py
 import numpy as np
 from sklearn.model_selection import GroupKFold

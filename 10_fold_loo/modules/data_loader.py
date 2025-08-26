@@ -153,7 +153,11 @@ def load_data(
     strict: bool = True,
     report_samples: int = 5,
     mapping_csv_path: Optional[str | Path] = None,
+    # NEW:
+    target_column: Optional[str] = None,
+    drop_missing_target: bool = False,
 ):
+
     """
     Deterministic, validated loader.
 
@@ -199,11 +203,45 @@ def load_data(
         )
         ordered_groups = {k: groups[k] for k in common_ids}
 
+        # --- NEW: optionally drop samples with non-finite target values ---
+        if drop_missing_target and (target_column is not None):
+            if target_column not in aligned_meta.columns:
+                raise KeyError(
+                    f"target_column '{target_column}' not present in metadata columns: "
+                    f"{aligned_meta.columns.tolist()}"
+                )
+
+            # Coerce to numeric; NaNs will mark non-finite
+            t = pd.to_numeric(aligned_meta[target_column], errors="coerce").to_numpy(dtype=float)
+            mask = np.isfinite(t)
+
+            if not mask.any():
+                raise ValueError(
+                    f"No finite values found in target_column='{target_column}' after filtering."
+                )
+
+            # Report what was dropped
+            if (~mask).any():
+                dropped_ids = aligned_meta.loc[~mask, "FilePrefix"].tolist()
+                print(
+                    f"[data_loader] Dropping {len(dropped_ids)} sample(s) with missing/non-finite "
+                    f"'{target_column}': {', '.join(dropped_ids)}"
+                )
+
+            # Keep only finite-target samples
+            aligned_meta = aligned_meta.loc[mask].reset_index(drop=True)
+
+            # Also shrink the file groups & common_ids to match
+            keep_ids = aligned_meta["FilePrefix"].tolist()
+            ordered_groups = {k: ordered_groups[k] for k in keep_ids if k in ordered_groups}
+            common_ids = keep_ids
+
     else:
         # No metadata provided -> deterministic by filename groups only
         common_ids = sorted(groups.keys())
         aligned_meta = pd.DataFrame({"FilePrefix": common_ids})
         ordered_groups = {k: groups[k] for k in common_ids}
+
 
     # ---------------- Read averaged & unaveraged in the SAME order ----------------
 

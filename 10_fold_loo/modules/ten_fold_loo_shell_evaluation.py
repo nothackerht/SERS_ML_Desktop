@@ -222,9 +222,10 @@ def leave_one_out_test_evaluation(
     print(f"[LOO] TRAIN finite mask kept {mask_train.sum()}/{mask_train.size} rows")
     print(f"[LOO] TEST  finite mask kept {mask_test.sum()}/{mask_test.size} rows")
     if 'Type' in meta_train.columns:
-        print("[LOO] TRAIN kept by type:", meta_train.loc[mask_train, 'Type'].value_counts().to_dict())
+        print("[LOO] TRAIN kept by type:", meta_train['Type'].value_counts().to_dict())
     if 'Type' in meta_test.columns:
-        print("[LOO] TEST  kept by type:", meta_test.loc[mask_test, 'Type'].value_counts().to_dict())
+        print("[LOO] TEST  kept by type:",  meta_test['Type'].value_counts().to_dict())
+
 
     # Consistency checks (9 spectra per sample)
     n_train = meta_train.shape[0]

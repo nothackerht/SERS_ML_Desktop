@@ -1028,12 +1028,12 @@ print("First 2 entries:", xgb_grid[:2])
 # # ── Models to try (include or comment out as you like) ───────────────────────
 model_list = [
     'sipls',
-    'random_forest',
-    'svr',
-    'xgboost',
-    'mlp',
-    'knn',
-    'gpr'
+    # 'random_forest',
+    # 'svr',
+    # 'xgboost',
+    # 'mlp',
+    # 'knn',
+    # 'gpr'
 ]
 
 # # =============================================================================
@@ -1090,28 +1090,37 @@ param_grid = {
 }
 
 # # ── Preprocessing chains ────────────────────────────────────────────────────
+# preprocess_grid = [
+#     [],                    # no preprocessing
+#     ['EMSC'],
+#     # ['IntervalPLS'],
+#     ['SNV'],
+#     # ['SNV', 'IntervalPLS'],
+#     # ['Normalization', 'IntervalPLS'],
+#     ['Normalization'],
+#     # ['IntervalPLS', 'Normalization' ],
+#     ['Second Derivative'],
+#     ['EMSC', 'SNV'],
+#     # ['IntervalPLS','EMSC', 'SNV'],
+#     # ['EMSC', 'SNV', 'IntervalPLS' ],
+#     ['SNV', 'Second Derivative']
+# ]
 preprocess_grid = [
     [],                    # no preprocessing
-    ['EMSC'],
-    ['IntervalPLS'],
-    ['SNV'],
-    ['SNV', 'IntervalPLS'],
-    ['Normalization', 'IntervalPLS'],
-    ['IntervalPLS', 'Normalization' ],
-    ['Second Derivative'],
-    ['EMSC', 'SNV'],
-    ['IntervalPLS','EMSC', 'SNV'],
-    ['EMSC', 'SNV', 'IntervalPLS' ],
-    ['SNV', 'Second Derivative']
+    # ['EMSC'],
+    # ['SNV'],
+    # ['Normalization'],
+    # ['Second Derivative'],
+    # ['EMSC', 'SNV'],
+    # ['SNV', 'Second Derivative']
 ]
-
 # # =============================================================================
 # # Targets
 # # =============================================================================
 targets = [
-    ("Splicing Index",     "target_SI"),
+    # ("Splicing Index",     "target_SI"),
     # ("Hand‐Grip Strength", "HGS_pp_avg"),
-    # ("Ankle Dorsiflexion",  "ADF_pp_avg")
+    ("Ankle Dorsiflexion",  "ADF_pp_avg")
 ]
 
 # # ── Set your new data locations here ────────────────────────────────────────
