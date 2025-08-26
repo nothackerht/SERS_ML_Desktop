@@ -1114,6 +1114,27 @@ preprocess_grid = [
     # ['EMSC', 'SNV'],
     # ['SNV', 'Second Derivative']
 ]
+# OG preprocessing
+# [
+#     [],
+#     ['EMSC'],
+#     ['Normalization'],
+#     ['SNV'],
+#     ['Second Derivative'],
+#     ['EMSC', 'Normalization'],
+#     ['EMSC', 'SNV'],
+#     ['EMSC', 'Second Derivative'],
+#     ['Normalization', 'EMSC'],
+#     ['Normalization', 'SNV'],
+#     ['Normalization', 'Second Derivative'],
+#     ['SNV', 'EMSC'],
+#     ['SNV', 'Normalization'],
+#     ['SNV', 'Second Derivative'],
+#     ['Second Derivative', 'EMSC'],
+#     ['Second Derivative', 'Normalization'],
+#     ['Second Derivative', 'SNV']
+# ]
+
 # # =============================================================================
 # # Targets
 # # =============================================================================
