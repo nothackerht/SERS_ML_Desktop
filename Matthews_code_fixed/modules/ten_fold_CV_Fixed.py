@@ -50,7 +50,7 @@ rf_res = rm.run_rf_nested(
 print(rf_res["summary"])  # dict with outer CV sample-level RMSE/R2 etc.
 
 """
-
+from joblib import Parallel, delayed
 import os
 import json
 import math
@@ -255,26 +255,35 @@ class NestedGroupedCV:
 
             inner = GroupKFold(n_splits=min(n_splits_inner, len(tr_s_idx)))
 
-            hp_mse: List[float] = []
-            for n_comp in n_components_list:
-                fold_mse = []
-                for iti, ivo in inner.split(X_tr, groups=local_groups):
-                    X_tr_i, X_vl_i = X_tr[iti], X_tr[ivo]
-                    Y_tr_i, Y_vl_i = Y_tr[iti], Y_tr[ivo]
-
-                    # fit preprocessing on inner-TRAIN only, transform train & val
-                    Xt_tr_i, Xt_vl_i = self._fit_transform(X_tr_i, X_vl_i, preprocess_methods)
-
+            # accumulate average MSE per n_components across inner splits
+            hp_mse_sums = np.zeros(len(n_components_list), dtype=np.float64)
+            fold_count = 0
+            
+            for iti, ivo in inner.split(X_tr, groups=local_groups):
+                X_tr_i, X_vl_i = X_tr[iti], X_tr[ivo]
+                Y_tr_i, Y_vl_i = Y_tr[iti], Y_tr[ivo]
+            
+                # ONE preprocessing per split, reused for all hyperparams
+                Xt_tr_i, Xt_vl_i = self._fit_transform(X_tr_i, X_vl_i, preprocess_methods)
+            
+                # optional: parallelize the sweep over n_components for this split
+                def _eval_pls(n_comp: int) -> float:
                     pls = PLSRegression(n_components=int(n_comp))
                     pls.fit(Xt_tr_i, Y_tr_i)
                     Y_vl_hat = pls.predict(Xt_vl_i)
-
-                    # sample-level collapse, then MSE over all targets
-                    Y_vl_s = _sample_means(Y_vl_i, reps=self.reps)
+                    Y_vl_s  = _sample_means(Y_vl_i,  reps=self.reps)
                     Y_hat_s = _sample_means(Y_vl_hat, reps=self.reps)
-                    mse_val = mean_squared_error(Y_vl_s, Y_hat_s)
-                    fold_mse.append(float(mse_val))
-                hp_mse.append(float(np.mean(fold_mse)))
+                    return float(mean_squared_error(Y_vl_s, Y_hat_s))
+            
+                split_mse_list = Parallel(n_jobs=-1, prefer="threads")(
+                    delayed(_eval_pls)(nc) for nc in n_components_list
+                )
+            
+                hp_mse_sums += np.array(split_mse_list, dtype=np.float64)
+                fold_count += 1
+            
+            hp_mse = (hp_mse_sums / fold_count).tolist()
+
 
             best_idx = _select_via_mse(hp_mse)
             best_ncomp = int(n_components_list[best_idx])
@@ -362,29 +371,38 @@ class NestedGroupedCV:
             local_groups = np.array([compress[int(g)] for g in groups[spectra_tr]], dtype=int)
             inner = GroupKFold(n_splits=min(n_splits_inner, len(tr_s_idx)))
 
-            hp_mse: List[float] = []
-            for hp in rf_param_list:
-                fold_mse = []
-                for iti, ivo in inner.split(X_tr, groups=local_groups):
-                    X_tr_i, X_vl_i = X_tr[iti], X_tr[ivo]
-                    Y_tr_i, Y_vl_i = Y_tr[iti], Y_tr[ivo]
-
-                    Xt_tr_i, Xt_vl_i = self._fit_transform(X_tr_i, X_vl_i, preprocess_methods)
-
+            # accumulate average MSE per RF hyperparam across inner splits
+            hp_mse_sums = np.zeros(len(rf_param_list), dtype=np.float64)
+            fold_count = 0
+            
+            for iti, ivo in inner.split(X_tr, groups=local_groups):
+                X_tr_i, X_vl_i = X_tr[iti], X_tr[ivo]
+                Y_tr_i, Y_vl_i = Y_tr[iti], Y_tr[ivo]
+            
+                # ONE preprocessing per split, reused for all hp candidates
+                Xt_tr_i, Xt_vl_i = self._fit_transform(X_tr_i, X_vl_i, preprocess_methods)
+            
+                def _eval_rf(hp: Dict) -> float:
                     # train 3 independent RFs (one per target)
                     preds_vl = []
                     for j in range(Y_tr_i.shape[1]):
-                        rf = RandomForestRegressor(**hp, random_state=random_state)
+                        rf = RandomForestRegressor(**hp, random_state=random_state, n_jobs=-1)
                         rf.fit(Xt_tr_i, Y_tr_i[:, j])
                         preds_vl.append(rf.predict(Xt_vl_i))
                     Y_vl_hat = np.column_stack(preds_vl)
-
-                    # sample-level mse (macro over targets)
-                    Y_vl_s = _sample_means(Y_vl_i, reps=self.reps)
+                    Y_vl_s  = _sample_means(Y_vl_i,  reps=self.reps)
                     Y_hat_s = _sample_means(Y_vl_hat, reps=self.reps)
-                    mse_val = mean_squared_error(Y_vl_s, Y_hat_s)
-                    fold_mse.append(float(mse_val))
-                hp_mse.append(float(np.mean(fold_mse)))
+                    return float(mean_squared_error(Y_vl_s, Y_hat_s))
+            
+                split_mse_list = Parallel(n_jobs=-1, prefer="threads")(
+                    delayed(_eval_rf)(hp) for hp in rf_param_list
+                )
+            
+                hp_mse_sums += np.array(split_mse_list, dtype=np.float64)
+                fold_count += 1
+            
+            hp_mse = (hp_mse_sums / fold_count).tolist()
+
 
             best_idx = _select_via_mse(hp_mse)
             best_hp = rf_param_list[best_idx]
@@ -395,7 +413,7 @@ class NestedGroupedCV:
 
             preds_te = []
             for j in range(Y_tr.shape[1]):
-                rf = RandomForestRegressor(**best_hp, random_state=random_state)
+                rf = RandomForestRegressor(**best_hp, random_state=random_state, n_jobs=-1)
                 rf.fit(Xt_tr_full, Y_tr[:, j])
                 preds_te.append(rf.predict(Xt_te_full))
             Y_te_hat = np.column_stack(preds_te)
