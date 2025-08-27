@@ -12,7 +12,9 @@ Created on Tue Aug 26 15:37:12 2025
 import os
 import numpy as np
 import pandas as pd
-
+from modules.ten_fold_CV_Fixed import NestedGroupedCV
+from modules.data_loader import load_data
+from modules.plot_parity import parity_plot_sample_level, save_outer_predictions_excel
 # ── Your modules ─────────────────────────────────────────────────────────────
 from modules.data_loader import load_data                      # ✔ aligned spectra/meta  :contentReference[oaicite:2]{index=2}
 from modules.ten_fold_CV_Fixed import run_nested_10fold_cv      # ← your new CV engine
