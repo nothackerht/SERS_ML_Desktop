@@ -1,3 +1,4 @@
+from __future__ import annotations
 # -*- coding: utf-8 -*-
 """
 Created on Tue Aug 26 15:28:27 2025
@@ -49,7 +50,7 @@ rf_res = rm.run_rf_nested(
 print(rf_res["summary"])  # dict with outer CV sample-level RMSE/R2 etc.
 
 """
-from __future__ import annotations
+
 import os
 import json
 import math
@@ -170,15 +171,41 @@ class NestedGroupedCV:
         return X_all, Y, Y_s, groups, meta0
 
     # -------- preprocessing (fit on training-only) --------
-    def _fit_transform(self, X_train: np.ndarray, X_apply: np.ndarray, methods: List[str]) -> Tuple[np.ndarray, np.ndarray]:
-        """Fit the unsupervised preprocessing on X_train^T features, then transform both.
-        Preprocessing() expects (n_features, n_spectra)."""
-        pre = Preprocessing()
-        # Fit on training spectra only
-        pre.fit(X_train.T, methods)
-        Xt_tr = pre.transform(X_train.T, methods).T
-        Xt_ap = pre.transform(X_apply.T, methods).T
-        return Xt_tr.astype(np.float32), Xt_ap.astype(np.float32)
+    def _fit_transform(self, X_train: np.ndarray, X_apply: np.ndarray, methods: list):
+        """
+        Apply preprocessing to X_train and X_apply with parameters derived from X_train only.
+        Inputs are (n_spectra, n_features). The Preprocessing class expects (n_features, n_spectra).
+        """
+        # Work in (n_features, n_spectra)
+        Xtr = X_train.T.copy()
+        Xap = X_apply.T.copy()
+    
+        for m in (methods or []):
+            if m == "EMSC":
+                # compute reference from TRAIN only, reuse for APPLY
+                ref = np.mean(Xtr, axis=1)
+                Xtr = Preprocessing(Xtr).emsc(Xtr, reference=ref)
+                Xap = Preprocessing(Xap).emsc(Xap, reference=ref)
+    
+            elif m == "Normalization":
+                Xtr = Preprocessing(Xtr).normalize_spectrum(Xtr)
+                Xap = Preprocessing(Xap).normalize_spectrum(Xap)
+    
+            elif m == "SNV":
+                # SNV here is per-spectrum (column-wise), so no shared params
+                Xtr = Preprocessing(Xtr).snv(Xtr)
+                Xap = Preprocessing(Xap).snv(Xap)
+    
+            elif m == "Second Derivative":
+                Xtr = Preprocessing(Xtr).second_derivative(Xtr)
+                Xap = Preprocessing(Xap).second_derivative(Xap)
+    
+            else:
+                raise ValueError(f"Unknown preprocessing method: {m}")
+    
+        # Return back as (n_spectra, n_features)
+        return Xtr.T.astype(np.float32), Xap.T.astype(np.float32)
+
 
     # ----------------------- PLS -----------------------
     def run_pls_nested(
