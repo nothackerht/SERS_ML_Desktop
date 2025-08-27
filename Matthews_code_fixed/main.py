@@ -10,6 +10,8 @@ Created on Tue Aug 26 15:37:12 2025
 # Uses modules: data_loader.py, preprocessing.py, and your 10_fold_CV_Fixed.py
 
 import os
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
 import numpy as np
 import pandas as pd
 from modules.ten_fold_CV_Fixed import NestedGroupedCV
@@ -109,6 +111,9 @@ for nice_name, target_col in TARGETS:
 
     col_idx = tgt_index[target_col]
 
+    # NEW: build RF grid once per target (same search space, less overhead)
+    rf_grid = rm.generate_random_rf_params(num_iterations=100)
+
     for methods in PGRID:
         # ---- PLS ----
         pls_res = rm.run_pls_nested(
@@ -124,11 +129,10 @@ for nice_name, target_col in TARGETS:
         cand = ("pls", methods, {"n_components_choices": "2..18"}, pls_res, score)
         best = cand if (best is None or score < best[4]) else best
 
-        # ---- RF ----
-        rf_grid = rm.generate_random_rf_params(num_iterations=100)
+        # ---- RF ---- (reuse rf_grid here)
         rf_res = rm.run_rf_nested(
             preprocess_methods=methods,
-            rf_param_list=rf_grid,
+            rf_param_list=rf_grid,   # ← reused grid
             n_splits_outer=10,
             n_splits_inner=5,
             target_order=TARGET_ORDER
@@ -142,7 +146,7 @@ for nice_name, target_col in TARGETS:
         # ---- iPLS ----
         ipls_res = rm.run_ipls_nested(
             preprocess_methods=methods,
-            n_components_list=[6],         # match your prior search
+            n_components_list=[6],
             num_intervals_list=[15],
             n_splits_outer=10,
             n_splits_inner=5,
@@ -153,6 +157,7 @@ for nice_name, target_col in TARGETS:
         score = mse_1target(yts, yps, col_idx)
         cand = ("ipls", methods, {"n_components": [6], "num_intervals": [15]}, ipls_res, score)
         best = cand if score < best[4] else best
+
 
     # --- Emit artifacts for the winner (per target) ---
     model_name, methods, hp_note, res, _ = best
