@@ -76,3 +76,42 @@ def parity_plot_sample_level(
             fp = os.path.join(out_dir, f"{fname_prefix}_{j+1}.png")
             plt.savefig(fp, dpi=dpi)
         plt.close()
+def save_outer_predictions_excel(
+    y_true_sample: np.ndarray,
+    y_pred_sample: np.ndarray,
+    meta_kept: pd.DataFrame | None = None,
+    target_order=("target_SI", "HGS_pp_avg", "ADF_pp_avg"),
+    out_path: str | None = None,
+    y_true_sample_std: np.ndarray | None = None,
+    y_pred_sample_std: np.ndarray | None = None,
+):
+    """
+    Save a tidy table of held-out *sample-level* predictions (and meta, if provided).
+    Optionally includes per-sample std columns for error bars.
+
+    Columns per target:
+      <t>__true, <t>__pred, [optional] <t>__true_std, <t>__pred_std
+    """
+    assert y_true_sample.shape == y_pred_sample.shape, "true/pred shapes must match"
+    N, K = y_true_sample.shape
+
+    include_true_std = isinstance(y_true_sample_std, np.ndarray) and y_true_sample_std.shape == (N, K)
+    include_pred_std = isinstance(y_pred_sample_std, np.ndarray) and y_pred_sample_std.shape == (N, K)
+
+    data = {}
+    for j, t in enumerate(target_order):
+        data[f"{t}__true"] = y_true_sample[:, j]
+        data[f"{t}__pred"] = y_pred_sample[:, j]
+        if include_true_std:
+            data[f"{t}__true_std"] = y_true_sample_std[:, j]
+        if include_pred_std:
+            data[f"{t}__pred_std"] = y_pred_sample_std[:, j]
+
+    df = pd.DataFrame(data)
+    if (meta_kept is not None) and (len(meta_kept) == N):
+        df = pd.concat([meta_kept.reset_index(drop=True), df], axis=1)
+
+    if out_path:
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        df.to_excel(out_path, index=False)
+    return df
