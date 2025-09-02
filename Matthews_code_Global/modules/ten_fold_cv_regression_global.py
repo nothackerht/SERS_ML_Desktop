@@ -16,7 +16,8 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, r2_score
 from joblib import Parallel, delayed
 import random
-
+# TEMP fallback (works today without extra deps): use sklearn MLP as a drop-in
+from sklearn.neural_network import MLPRegressor as ACFNNRegressor
 # import your preprocessing class
 from modules.preprocessing import Preprocessing
 
@@ -399,6 +400,90 @@ class GlobalGroupedCV:  # new class to keep your nested one intact; or merge if 
             "rmse_macro": float(np.sqrt(mean_squared_error(Y_true_all, Y_pred_all))),
             "r2_macro":   float(r2_score(Y_true_all, Y_pred_all, multioutput="variance_weighted")),
             "hp_mse_table": {f"C={c},I={I}": float(m) for (c,I),m in zip(candidates, cand_mse)},
+            "n_folds": int(min(n_splits, N)),
+        }
+        out["heldout_predictions"] = {
+            "y_true_sample": Y_true_all,
+            "y_pred_sample": Y_pred_all,
+            "y_true_sample_std": Y_true_std_all,
+            "y_pred_sample_std": Y_pred_std_all,
+        }
+        return out
+    def run_acfnn_global(
+        self,
+        *,
+        preprocess_methods: List[str],
+        acfnn_param_list: List[Dict],
+        n_splits: int = 10,
+        target_order: List[str] = ("target_SI","HGS_pp_avg","ADF_pp_avg"),
+        random_state: int = 42,
+    ) -> Dict:
+        """
+        Global HP selection for AC-FNN (multi-target regressor).
+        Same contract as PLS/RF: pick one HP set by lowest sample-level MSE,
+        return mean/std per-sample so parity plots can draw error bars.
+        """
+        X, Y, Y_s, groups, meta_kept = self._build_xy(list(target_order))
+        N   = len(meta_kept)
+        kf  = KFold(n_splits=min(n_splits, N), shuffle=True, random_state=random_state)
+        idx = np.arange(N)
+    
+        def score_hp(hp: Dict) -> float:
+            fold_mses = []
+            for tr_s_idx, te_s_idx in kf.split(idx):
+                spectra_tr = np.isin(np.repeat(idx, self.reps), tr_s_idx)
+                spectra_te = np.isin(np.repeat(idx, self.reps), te_s_idx)
+                X_tr, X_te = X[spectra_tr], X[spectra_te]
+                Y_tr, Y_te = Y[spectra_tr], Y[spectra_te]
+    
+                Xt_tr, Xt_te = self._fit_transform(X_tr, X_te, preprocess_methods)
+    
+                # one multi-output regressor (K targets)
+                model = ACFNNRegressor(random_state=random_state, **hp)
+                model.fit(Xt_tr, Y_tr)
+                Y_hat = model.predict(Xt_te)
+    
+                Y_te_s,  _ = _sample_means_stds(Y_te,  reps=self.reps)
+                Y_hat_s, _ = _sample_means_stds(Y_hat, reps=self.reps)
+                fold_mses.append(mean_squared_error(Y_te_s, Y_hat_s))
+            return float(np.mean(fold_mses))
+    
+        hp_mse  = [score_hp(hp) for hp in acfnn_param_list]
+        best_ix = int(np.argmin(hp_mse))
+        best_hp = acfnn_param_list[best_ix]
+    
+        # Held-out predictions (and stds) with the chosen global HPs
+        held_true, held_pred = [], []
+        held_true_std, held_pred_std = [], []
+        for tr_s_idx, te_s_idx in kf.split(idx):
+            spectra_tr = np.isin(np.repeat(idx, self.reps), tr_s_idx)
+            spectra_te = np.isin(np.repeat(idx, self.reps), te_s_idx)
+            X_tr, X_te = X[spectra_tr], X[spectra_te]
+            Y_tr, Y_te = Y[spectra_tr], Y[spectra_te]
+    
+            Xt_tr, Xt_te = self._fit_transform(X_tr, X_te, preprocess_methods)
+            model = ACFNNRegressor(random_state=random_state, **best_hp)
+            model.fit(Xt_tr, Y_tr)
+            Y_hat = model.predict(Xt_te)
+    
+            m_true, s_true = _sample_means_stds(Y_te,  reps=self.reps)
+            m_pred, s_pred = _sample_means_stds(Y_hat, reps=self.reps)
+            held_true.append(m_true);     held_pred.append(m_pred)
+            held_true_std.append(s_true); held_pred_std.append(s_pred)
+    
+        Y_true_all     = np.vstack(held_true)
+        Y_pred_all     = np.vstack(held_pred)
+        Y_true_std_all = np.vstack(held_true_std)
+        Y_pred_std_all = np.vstack(held_pred_std)
+    
+        out = {"per_target": {}, "chosen_hyperparams": {"ac_fnn_params": best_hp, "preprocess": preprocess_methods}}
+        for j, t in enumerate(target_order):
+            rmse_j, r2_j = _rmse_r2_sample_level(Y_true_all[:, j], Y_pred_all[:, j])
+            out["per_target"][t] = {"rmse": rmse_j, "r2": r2_j}
+        out["summary"] = {
+            "rmse_macro": float(np.sqrt(mean_squared_error(Y_true_all, Y_pred_all))),
+            "r2_macro":   float(r2_score(Y_true_all, Y_pred_all, multioutput="variance_weighted")),
+            "hp_mse_list": [float(x) for x in hp_mse],
             "n_folds": int(min(n_splits, N)),
         }
         out["heldout_predictions"] = {
