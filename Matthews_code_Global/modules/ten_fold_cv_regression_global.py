@@ -23,6 +23,18 @@ from modules.preprocessing import Preprocessing
 # --- helper functions (place them here) ---
 def _groups_for_spectra(n_samples: int, reps: int = 9) -> np.ndarray:
     return np.repeat(np.arange(n_samples, dtype=int), reps)
+def _sample_means_stds(y_like: np.ndarray, reps: int = 9):
+    """Return (means, stds) collapsing 9× spectra per sample."""
+    y = np.asarray(y_like)
+    assert y.shape[0] % reps == 0, "length must be multiple of reps"
+    N = y.shape[0] // reps
+    if y.ndim == 1:
+        y3 = y.reshape(N, reps, 1)
+        m  = y3.mean(axis=1).ravel()
+        s  = y3.std(axis=1)       # ddof=0
+        return m, s
+    y3 = y.reshape(N, reps, -1)
+    return y3.mean(axis=1), y3.std(axis=1)  # (N, K), (N, K)
 
 def _sample_means(y_like: np.ndarray, reps: int = 9) -> np.ndarray:
     y = np.asarray(y_like)
@@ -144,16 +156,11 @@ class GlobalGroupedCV:  # new class to keep your nested one intact; or merge if 
         target_order: List[str] = ("target_SI","HGS_pp_avg","ADF_pp_avg"),
         random_state: int = 42,
     ) -> Dict:
-        """
-        Global HP selection: choose one n_components (same for all folds) by minimizing
-        sample-level MSE aggregated over a single GroupKFold across samples.
-        """
         X, Y, Y_s, groups, meta_kept = self._build_xy(list(target_order))
         N = len(meta_kept)
         outer = KFold(n_splits=min(n_splits, N), shuffle=True, random_state=random_state)
         sample_indices = np.arange(N)
-
-        # 1) Score every candidate with the same folds (HP held constant across all folds)
+    
         def score_pls(nc: int) -> float:
             fold_mses = []
             for tr_s_idx, te_s_idx in outer.split(sample_indices):
@@ -161,40 +168,41 @@ class GlobalGroupedCV:  # new class to keep your nested one intact; or merge if 
                 spectra_te = np.isin(np.repeat(sample_indices, self.reps), te_s_idx)
                 X_tr, X_te = X[spectra_tr], X[spectra_te]
                 Y_tr, Y_te = Y[spectra_tr], Y[spectra_te]
-
                 Xt_tr, Xt_te = self._fit_transform(X_tr, X_te, preprocess_methods)
                 pls = PLSRegression(n_components=int(nc))
                 pls.fit(Xt_tr, Y_tr)
                 Y_hat = pls.predict(Xt_te)
-
-                Y_te_s  = _sample_means(Y_te,  reps=self.reps)
-                Y_hat_s = _sample_means(Y_hat, reps=self.reps)
-                fold_mses.append( mean_squared_error(Y_te_s, Y_hat_s) )  # macro MSE
+                Y_te_s,  _ = _sample_means_stds(Y_te,  reps=self.reps)
+                Y_hat_s, _ = _sample_means_stds(Y_hat, reps=self.reps)
+                fold_mses.append(mean_squared_error(Y_te_s, Y_hat_s))
             return float(np.mean(fold_mses))
-
+    
         hp_mse = [score_pls(nc) for nc in n_components_list]
         best_idx = int(np.argmin(hp_mse))
         best_nc  = int(n_components_list[best_idx])
-
-        # 2) With the chosen global HP, generate held-out predictions across the folds
+    
         held_true, held_pred = [], []
+        held_true_std, held_pred_std = [], []
         for tr_s_idx, te_s_idx in KFold(n_splits=min(n_splits, N), shuffle=True, random_state=random_state).split(sample_indices):
             spectra_tr = np.isin(np.repeat(sample_indices, self.reps), tr_s_idx)
             spectra_te = np.isin(np.repeat(sample_indices, self.reps), te_s_idx)
             X_tr, X_te = X[spectra_tr], X[spectra_te]
             Y_tr, Y_te = Y[spectra_tr], Y[spectra_te]
-
             Xt_tr, Xt_te = self._fit_transform(X_tr, X_te, preprocess_methods)
             pls = PLSRegression(n_components=best_nc)
             pls.fit(Xt_tr, Y_tr)
             Y_hat = pls.predict(Xt_te)
-
-            held_true.append( _sample_means(Y_te,  reps=self.reps) )
-            held_pred.append( _sample_means(Y_hat, reps=self.reps) )
-
-        Y_true_all = np.vstack(held_true)
-        Y_pred_all = np.vstack(held_pred)
-
+    
+            m_true, s_true = _sample_means_stds(Y_te,  reps=self.reps)
+            m_pred, s_pred = _sample_means_stds(Y_hat, reps=self.reps)
+            held_true.append(m_true);     held_pred.append(m_pred)
+            held_true_std.append(s_true); held_pred_std.append(s_pred)
+    
+        Y_true_all     = np.vstack(held_true)
+        Y_pred_all     = np.vstack(held_pred)
+        Y_true_std_all = np.vstack(held_true_std)
+        Y_pred_std_all = np.vstack(held_pred_std)
+    
         out = {"per_target": {}, "chosen_hyperparams": {"n_components": best_nc, "preprocess": preprocess_methods}}
         for j, t in enumerate(target_order):
             rmse_j, r2_j = _rmse_r2_sample_level(Y_true_all[:, j], Y_pred_all[:, j])
@@ -205,7 +213,12 @@ class GlobalGroupedCV:  # new class to keep your nested one intact; or merge if 
             "hp_mse_curve": dict(zip(map(int, n_components_list), map(float, hp_mse))),
             "n_folds": int(min(n_splits, N)),
         }
-        out["heldout_predictions"] = {"y_true_sample": Y_true_all, "y_pred_sample": Y_pred_all}
+        out["heldout_predictions"] = {
+            "y_true_sample": Y_true_all,
+            "y_pred_sample": Y_pred_all,
+            "y_true_sample_std": Y_true_std_all,   # <-- x-error bars
+            "y_pred_sample_std": Y_pred_std_all,   # <-- y-error bars
+        }
         return out
 
     # ------------- Random Forest (GLOBAL HPs) -------------
@@ -218,15 +231,11 @@ class GlobalGroupedCV:  # new class to keep your nested one intact; or merge if 
         target_order: List[str] = ("target_SI","HGS_pp_avg","ADF_pp_avg"),
         random_state: int = 42,
     ) -> Dict:
-        """
-        Global HP selection for RF: pick one rf_params (same for all folds) by minimizing
-        sample-level macro MSE over GroupKFold.
-        """
         X, Y, Y_s, groups, meta_kept = self._build_xy(list(target_order))
         N = len(meta_kept)
         outer = KFold(n_splits=min(n_splits, N), shuffle=True, random_state=random_state)
         sample_indices = np.arange(N)
-
+    
         def score_rf(hp: Dict) -> float:
             fold_mses = []
             for tr_s_idx, te_s_idx in outer.split(sample_indices):
@@ -234,47 +243,50 @@ class GlobalGroupedCV:  # new class to keep your nested one intact; or merge if 
                 spectra_te = np.isin(np.repeat(sample_indices, self.reps), te_s_idx)
                 X_tr, X_te = X[spectra_tr], X[spectra_te]
                 Y_tr, Y_te = Y[spectra_tr], Y[spectra_te]
-
                 Xt_tr, Xt_te = self._fit_transform(X_tr, X_te, preprocess_methods)
-
+    
                 preds = []
                 for j in range(Y_tr.shape[1]):
                     rf = RandomForestRegressor(**hp, random_state=random_state, n_jobs=-1)
                     rf.fit(Xt_tr, Y_tr[:, j])
-                    preds.append( rf.predict(Xt_te) )
+                    preds.append(rf.predict(Xt_te))
                 Y_hat = np.column_stack(preds)
-
-                Y_te_s  = _sample_means(Y_te,  reps=self.reps)
-                Y_hat_s = _sample_means(Y_hat, reps=self.reps)
-                fold_mses.append( mean_squared_error(Y_te_s, Y_hat_s) )
+    
+                Y_te_s,  _ = _sample_means_stds(Y_te,  reps=self.reps)
+                Y_hat_s, _ = _sample_means_stds(Y_hat, reps=self.reps)
+                fold_mses.append(mean_squared_error(Y_te_s, Y_hat_s))
             return float(np.mean(fold_mses))
-
+    
         hp_mse = [score_rf(hp) for hp in rf_param_list]
         best_idx = int(np.argmin(hp_mse))
         best_hp  = rf_param_list[best_idx]
-
+    
         held_true, held_pred = [], []
+        held_true_std, held_pred_std = [], []
         for tr_s_idx, te_s_idx in KFold(n_splits=min(n_splits, N), shuffle=True, random_state=random_state).split(sample_indices):
             spectra_tr = np.isin(np.repeat(sample_indices, self.reps), tr_s_idx)
             spectra_te = np.isin(np.repeat(sample_indices, self.reps), te_s_idx)
             X_tr, X_te = X[spectra_tr], X[spectra_te]
             Y_tr, Y_te = Y[spectra_tr], Y[spectra_te]
-
             Xt_tr, Xt_te = self._fit_transform(X_tr, X_te, preprocess_methods)
-
+    
             preds = []
             for j in range(Y_tr.shape[1]):
                 rf = RandomForestRegressor(**best_hp, random_state=random_state, n_jobs=-1)
                 rf.fit(Xt_tr, Y_tr[:, j])
-                preds.append( rf.predict(Xt_te) )
+                preds.append(rf.predict(Xt_te))
             Y_hat = np.column_stack(preds)
-
-            held_true.append( _sample_means(Y_te,  reps=self.reps) )
-            held_pred.append( _sample_means(Y_hat, reps=self.reps) )
-
-        Y_true_all = np.vstack(held_true)
-        Y_pred_all = np.vstack(held_pred)
-
+    
+            m_true, s_true = _sample_means_stds(Y_te,  reps=self.reps)
+            m_pred, s_pred = _sample_means_stds(Y_hat, reps=self.reps)
+            held_true.append(m_true);     held_pred.append(m_pred)
+            held_true_std.append(s_true); held_pred_std.append(s_pred)
+    
+        Y_true_all     = np.vstack(held_true)
+        Y_pred_all     = np.vstack(held_pred)
+        Y_true_std_all = np.vstack(held_true_std)
+        Y_pred_std_all = np.vstack(held_pred_std)
+    
         out = {"per_target": {}, "chosen_hyperparams": {"rf_params": best_hp, "preprocess": preprocess_methods}}
         for j, t in enumerate(target_order):
             rmse_j, r2_j = _rmse_r2_sample_level(Y_true_all[:, j], Y_pred_all[:, j])
@@ -285,7 +297,12 @@ class GlobalGroupedCV:  # new class to keep your nested one intact; or merge if 
             "hp_mse_list": [float(x) for x in hp_mse],
             "n_folds": int(min(n_splits, N)),
         }
-        out["heldout_predictions"] = {"y_true_sample": Y_true_all, "y_pred_sample": Y_pred_all}
+        out["heldout_predictions"] = {
+            "y_true_sample": Y_true_all,
+            "y_pred_sample": Y_pred_all,
+            "y_true_sample_std": Y_true_std_all,
+            "y_pred_sample_std": Y_pred_std_all,
+        }
         return out
 
     # ---------------- iPLS (GLOBAL HPs) ----------------
@@ -299,18 +316,11 @@ class GlobalGroupedCV:  # new class to keep your nested one intact; or merge if 
         target_order: List[str] = ("target_SI","HGS_pp_avg","ADF_pp_avg"),
         random_state: int = 42,
     ) -> Dict:
-        """
-        Global HP selection for iPLS: pick one (n_components, num_intervals)
-        by minimizing sample-level MSE over GroupKFold. As in your nested version,
-        the *interval itself* is (re)selected *within each fold* using only that
-        fold's training spectra via grouped CV (to avoid leakage), but the HPs
-        (n_components, num_intervals) are global.
-        """
         X, Y, Y_s, groups, meta_kept = self._build_xy(list(target_order))
         N = len(meta_kept)
         outer = KFold(n_splits=min(n_splits, N), shuffle=True, random_state=random_state)
         sample_indices = np.arange(N)
-
+    
         def score_ipls(n_comp: int, n_int: int) -> float:
             fold_mses = []
             for tr_s_idx, te_s_idx in outer.split(sample_indices):
@@ -318,49 +328,46 @@ class GlobalGroupedCV:  # new class to keep your nested one intact; or merge if 
                 spectra_te = np.isin(np.repeat(sample_indices, self.reps), te_s_idx)
                 X_tr, X_te = X[spectra_tr], X[spectra_te]
                 Y_tr, Y_te = Y[spectra_tr], Y[spectra_te]
-
-                # local group ids for outer-train spectra
+    
                 tr_sorted = np.sort(tr_s_idx)
                 compress = {g: i for i, g in enumerate(tr_sorted)}
                 groups_tr = np.array([compress[int(g)] for g in groups[spectra_tr]], dtype=int)
-
-                # choose interval using only outer-train (grouped CV, MSE)
+    
                 (a,b), _ = _best_interval_grouped(
                     X_tr=X_tr, Y_tr=Y_tr, groups_tr=groups_tr,
                     preprocess_methods=preprocess_methods,
                     n_components=int(n_comp), num_intervals=int(n_int),
-                    reps=self.reps, n_splits=max(3, min(5, len(np.unique(groups_tr)))) ,
+                    reps=self.reps, n_splits=max(3, min(5, len(np.unique(groups_tr)))),
                     random_state=random_state
                 )
-
-                # fit preprocessing on chosen interval of outer-train; evaluate on outer-test
+    
                 Xt_tr, Xt_te = self._fit_transform(X_tr[:, a:b], X_te[:, a:b], preprocess_methods)
                 pls = PLSRegression(n_components=int(n_comp))
                 pls.fit(Xt_tr, Y_tr)
                 Y_hat = pls.predict(Xt_te)
-
-                Y_te_s  = _sample_means(Y_te,  reps=self.reps)
-                Y_hat_s = _sample_means(Y_hat, reps=self.reps)
-                fold_mses.append( mean_squared_error(Y_te_s, Y_hat_s) )
+    
+                Y_te_s,  _ = _sample_means_stds(Y_te,  reps=self.reps)
+                Y_hat_s, _ = _sample_means_stds(Y_hat, reps=self.reps)
+                fold_mses.append(mean_squared_error(Y_te_s, Y_hat_s))
             return float(np.mean(fold_mses))
-
+    
         candidates = [(int(c), int(I)) for c in n_components_list for I in num_intervals_list]
         cand_mse   = [score_ipls(c, I) for (c, I) in candidates]
         best_idx   = int(np.argmin(cand_mse))
         best_c, best_I = candidates[best_idx]
-
-        # Generate held-out predictions with the chosen global HPs
+    
         held_true, held_pred = [], []
+        held_true_std, held_pred_std = [], []
         for tr_s_idx, te_s_idx in KFold(n_splits=min(n_splits, N), shuffle=True, random_state=random_state).split(sample_indices):
             spectra_tr = np.isin(np.repeat(sample_indices, self.reps), tr_s_idx)
             spectra_te = np.isin(np.repeat(sample_indices, self.reps), te_s_idx)
             X_tr, X_te = X[spectra_tr], X[spectra_te]
             Y_tr, Y_te = Y[spectra_tr], Y[spectra_te]
-
+    
             tr_sorted = np.sort(tr_s_idx)
             compress = {g: i for i, g in enumerate(tr_sorted)}
             groups_tr = np.array([compress[int(g)] for g in groups[spectra_tr]], dtype=int)
-
+    
             (a,b), _ = _best_interval_grouped(
                 X_tr=X_tr, Y_tr=Y_tr, groups_tr=groups_tr,
                 preprocess_methods=preprocess_methods,
@@ -368,18 +375,22 @@ class GlobalGroupedCV:  # new class to keep your nested one intact; or merge if 
                 reps=self.reps, n_splits=max(3, min(5, len(np.unique(groups_tr)))),
                 random_state=random_state
             )
-
+    
             Xt_tr, Xt_te = self._fit_transform(X_tr[:, a:b], X_te[:, a:b], preprocess_methods)
             pls = PLSRegression(n_components=best_c)
             pls.fit(Xt_tr, Y_tr)
             Y_hat = pls.predict(Xt_te)
-
-            held_true.append( _sample_means(Y_te,  reps=self.reps) )
-            held_pred.append( _sample_means(Y_hat, reps=self.reps) )
-
-        Y_true_all = np.vstack(held_true)
-        Y_pred_all = np.vstack(held_pred)
-
+    
+            m_true, s_true = _sample_means_stds(Y_te,  reps=self.reps)
+            m_pred, s_pred = _sample_means_stds(Y_hat, reps=self.reps)
+            held_true.append(m_true);     held_pred.append(m_pred)
+            held_true_std.append(s_true); held_pred_std.append(s_pred)
+    
+        Y_true_all     = np.vstack(held_true)
+        Y_pred_all     = np.vstack(held_pred)
+        Y_true_std_all = np.vstack(held_true_std)
+        Y_pred_std_all = np.vstack(held_pred_std)
+    
         out = {"per_target": {}, "chosen_hyperparams": {"n_components": best_c, "num_intervals": best_I, "preprocess": preprocess_methods}}
         for j, t in enumerate(target_order):
             rmse_j, r2_j = _rmse_r2_sample_level(Y_true_all[:, j], Y_pred_all[:, j])
@@ -390,5 +401,10 @@ class GlobalGroupedCV:  # new class to keep your nested one intact; or merge if 
             "hp_mse_table": {f"C={c},I={I}": float(m) for (c,I),m in zip(candidates, cand_mse)},
             "n_folds": int(min(n_splits, N)),
         }
-        out["heldout_predictions"] = {"y_true_sample": Y_true_all, "y_pred_sample": Y_pred_all}
+        out["heldout_predictions"] = {
+            "y_true_sample": Y_true_all,
+            "y_pred_sample": Y_pred_all,
+            "y_true_sample_std": Y_true_std_all,
+            "y_pred_sample_std": Y_pred_std_all,
+        }
         return out
