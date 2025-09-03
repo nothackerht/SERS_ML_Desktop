@@ -22,6 +22,18 @@ from sklearn.neural_network import MLPRegressor as ACFNNRegressor
 from modules.preprocessing import Preprocessing
 
 # --- helper functions (place them here) ---
+from sklearn.metrics import mean_absolute_error, median_absolute_error, explained_variance_score
+
+def _metrics(y_true, y_pred):
+    y_true = np.asarray(y_true).ravel()
+    y_pred = np.asarray(y_pred).ravel()
+    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
+    r2   = float(r2_score(y_true, y_pred))
+    mae  = float(mean_absolute_error(y_true, y_pred))
+    medae= float(median_absolute_error(y_true, y_pred))
+    evs  = float(explained_variance_score(y_true, y_pred))
+    return {"rmse": rmse, "r2": r2, "mae": mae, "medae": medae, "evs": evs}
+
 def _groups_for_spectra(n_samples: int, reps: int = 9) -> np.ndarray:
     return np.repeat(np.arange(n_samples, dtype=int), reps)
 def _sample_means_stds(y_like: np.ndarray, reps: int = 9):
