@@ -451,9 +451,18 @@ class GlobalGroupedCV:  # new class to keep your nested one intact; or merge if 
                 Xt_tr, Xt_te = self._fit_transform(X_tr, X_te, preprocess_methods)
     
                 # one multi-output regressor (K targets)
+                # --- BEGIN CHANGE (single-target friendly fit/predict) ---
+                y_tr_fit = Y_tr.ravel() if (Y_tr.ndim == 2 and Y_tr.shape[1] == 1) else Y_tr
                 model = ACFNNRegressor(random_state=random_state, **hp)
-                model.fit(Xt_tr, Y_tr)
+                model.fit(Xt_tr, y_tr_fit)
                 Y_hat = model.predict(Xt_te)
+                
+                # force predictions to 2D (n, 1) if single-output so downstream averaging/stacks match
+                Y_hat = np.asarray(Y_hat)
+                if Y_hat.ndim == 1:
+                    Y_hat = Y_hat.reshape(-1, 1)
+                # --- END CHANGE ---
+
     
                 Y_te_s,  _ = _sample_means_stds(Y_te,  reps=self.reps)
                 Y_hat_s, _ = _sample_means_stds(Y_hat, reps=self.reps)
@@ -474,9 +483,17 @@ class GlobalGroupedCV:  # new class to keep your nested one intact; or merge if 
             Y_tr, Y_te = Y[spectra_tr], Y[spectra_te]
     
             Xt_tr, Xt_te = self._fit_transform(X_tr, X_te, preprocess_methods)
+            # --- BEGIN CHANGE (single-target friendly fit/predict) ---
+            y_tr_fit = Y_tr.ravel() if (Y_tr.ndim == 2 and Y_tr.shape[1] == 1) else Y_tr
             model = ACFNNRegressor(random_state=random_state, **best_hp)
-            model.fit(Xt_tr, Y_tr)
+            model.fit(Xt_tr, y_tr_fit)
             Y_hat = model.predict(Xt_te)
+            
+            Y_hat = np.asarray(Y_hat)
+            if Y_hat.ndim == 1:
+                Y_hat = Y_hat.reshape(-1, 1)
+            # --- END CHANGE ---
+
     
             m_true, s_true = _sample_means_stds(Y_te,  reps=self.reps)
             m_pred, s_pred = _sample_means_stds(Y_hat, reps=self.reps)

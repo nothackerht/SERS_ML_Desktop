@@ -38,13 +38,29 @@ def parity_plot_sample_level(
         # Optional error bars per sample
         xerr = y_true_sample_std[:, j] if has_xerr else None
         yerr = y_pred_sample_std[:, j] if has_yerr else None
+        # Optional: drop NaNs before metrics/plotting
+        mask = ~np.isnan(yt1) & ~np.isnan(yp1)
+        if xerr is not None:
+            mask &= ~np.isnan(xerr)
+        if yerr is not None:
+            mask &= ~np.isnan(yerr)
+        
+        yt  = yt[mask].reshape(-1, 1)
+        yp  = yp[mask].reshape(-1, 1)
+        yt1 = yt1[mask]
+        yp1 = yp1[mask]
+        if xerr is not None:
+            xerr = xerr[mask]
+        if yerr is not None:
+            yerr = yerr[mask]
 
         # Fit line + metrics
         lr = LinearRegression().fit(yt, yp)
-        slope = float(lr.coef_[0])
+        slope = float(np.ravel(lr.coef_)[0])     # <- flatten for safety
         intercept = float(lr.intercept_)
-        r2 = float(r2_score(yt, yp))
+        r2 = float(r2_score(yt1, yp1))           # <- use 1-D arrays
         rmse = float(np.sqrt(mean_squared_error(yt1, yp1)))
+
 
         # Figure
         plt.figure(figsize=(6, 6))
@@ -58,6 +74,7 @@ def parity_plot_sample_level(
         grid = np.linspace(x_min, x_max, 200).reshape(-1, 1)
         plt.plot(grid, lr.predict(grid), 'r--', lw=2)        # best-fit line
         plt.plot([x_min, x_max], [x_min, x_max], 'k:', lw=1) # 45° line
+        plt.axis('equal')  # optional but recommended
 
         # Labels
         tname = target_names[j] if j < len(target_names) else f"Target {j+1}"
