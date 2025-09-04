@@ -68,8 +68,8 @@ PREPROCESS_GRID = [
 
 # ── Model hyperparameter spaces ──────────────────────────────────────────────
 PLS_COMPONENTS  = list(range(2, 19))     # 2..18
-IPLS_COMPONENTS = [6]
-IPLS_INTERVALS  = [15]
+IPLS_COMPONENTS = list(range(2, 11))     # 2..10  ← change this
+IPLS_INTERVALS  = [5, 10, 15]            #        ← and this
 
 def generate_random_rf_params(num_iterations=100, seed=42):
     import random
