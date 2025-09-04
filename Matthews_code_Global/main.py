@@ -93,6 +93,12 @@ ACFNN_GRID = [
     {"hidden_layer_sizes": (512, 256),        "activation": "relu", "alpha": 1e-4, "learning_rate_init": 5e-4, "batch_size": 64,  "max_iter": 300},
     {"hidden_layer_sizes": (256, 256, 128),   "activation": "relu", "alpha": 1e-5, "learning_rate_init": 1e-3, "batch_size": 128, "max_iter": 300},
 ]
+# ── Which models to run ─────────────────────────────────────────────────────
+RUN_PLS   = False
+RUN_RF    = False
+RUN_ACFNN = False
+RUN_IPLS  = True   # ← only run iPLS
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def _metrics(y_true, y_pred):
@@ -142,101 +148,45 @@ for nice_name, target_col in TARGETS:
         mpath  = _safe_methods_path(methods)
 
         # ---- PLS: evaluate every n_components ----
-        model_dir = os.path.join(pred_root, f"pls__{mpath}")
-        os.makedirs(model_dir, exist_ok=True)
-        for nc in PLS_COMPONENTS:
-            res = rm.run_pls_global(
-                preprocess_methods=methods,
-                n_components_list=[nc],
-                n_splits=10,
-                target_order=TARGET_ORDER_ONE,   # <- single target only
-            )
-            y_true = res["heldout_predictions"]["y_true_sample"][:, [COL_IDX]]
-            y_pred = res["heldout_predictions"]["y_pred_sample"][:, [COL_IDX]]
-            yts = y_true.ravel(); yps = y_pred.ravel()
-            mets = _metrics(yts, yps)
-            hp_str = f"C={nc}"
-
-            # Save per-combo predictions
-            out_xlsx = os.path.join(model_dir, f"{hp_str}.xlsx")
-            pd.DataFrame({f"{target_col}__true": yts, f"{target_col}__pred": yps}).to_excel(out_xlsx, index=False)
-
-            # Log metrics row
-            metrics_rows.append({
-                "target": target_col, "model": "pls", "preprocessing": mlabel, "hp": hp_str,
-                **mets
-            })
-
-            # Track best by RMSE
-            score = mets["rmse"]
-            if (best is None) or (score < best[0]):
-                best = (score, "pls", methods, hp_str, res, {"pred_path": out_xlsx})
+        if RUN_PLS:
+            model_dir = os.path.join(pred_root, f"pls__{mpath}")
+            os.makedirs(model_dir, exist_ok=True)
+            for nc in PLS_COMPONENTS:
+                res = rm.run_pls_global(
+                    preprocess_methods=methods,
+                    n_components_list=[nc],
+                    n_splits=10,
+                    target_order=TARGET_ORDER_ONE,   # <- single target only
+                )
+                y_true = res["heldout_predictions"]["y_true_sample"][:, [COL_IDX]]
+                y_pred = res["heldout_predictions"]["y_pred_sample"][:, [COL_IDX]]
+                yts = y_true.ravel(); yps = y_pred.ravel()
+                mets = _metrics(yts, yps)
+                hp_str = f"C={nc}"
+    
+                # Save per-combo predictions
+                out_xlsx = os.path.join(model_dir, f"{hp_str}.xlsx")
+                pd.DataFrame({f"{target_col}__true": yts, f"{target_col}__pred": yps}).to_excel(out_xlsx, index=False)
+    
+                # Log metrics row
+                metrics_rows.append({
+                    "target": target_col, "model": "pls", "preprocessing": mlabel, "hp": hp_str,
+                    **mets
+                })
+    
+                # Track best by RMSE
+                score = mets["rmse"]
+                if (best is None) or (score < best[0]):
+                    best = (score, "pls", methods, hp_str, res, {"pred_path": out_xlsx})
 
         # ---- RF: evaluate every sampled HP ----
-        model_dir = os.path.join(pred_root, f"rf__{mpath}")
-        os.makedirs(model_dir, exist_ok=True)
-        for hp in RF_GRID:
-            res = rm.run_rf_global(
-                preprocess_methods=methods,
-                rf_param_list=[hp],
-                n_splits=10,
-                target_order=TARGET_ORDER_ONE,
-            )
-            y_true = res["heldout_predictions"]["y_true_sample"][:, [COL_IDX]]
-            y_pred = res["heldout_predictions"]["y_pred_sample"][:, [COL_IDX]]
-            yts = y_true.ravel(); yps = y_pred.ravel()
-            mets = _metrics(yts, yps)
-            hp_str = _rf_tag(hp)
-
-            out_xlsx = os.path.join(model_dir, f"{hp_str}.xlsx")
-            pd.DataFrame({f"{target_col}__true": yts, f"{target_col}__pred": yps}).to_excel(out_xlsx, index=False)
-
-            metrics_rows.append({
-                "target": target_col, "model": "rf", "preprocessing": mlabel, "hp": hp_str,
-                **mets
-            })
-
-            score = mets["rmse"]
-            if score < best[0]:
-                best = (score, "rf", methods, hp_str, res, {"pred_path": out_xlsx})
-
-        # ---- AC-FNN: evaluate every HP in the grid ----
-        model_dir = os.path.join(pred_root, f"acfnn__{mpath}")
-        os.makedirs(model_dir, exist_ok=True)
-        for hp in ACFNN_GRID:
-            res = rm.run_acfnn_global(
-                preprocess_methods=methods,
-                acfnn_param_list=[hp],
-                n_splits=10,
-                target_order=TARGET_ORDER_ONE,
-            )
-            y_true = res["heldout_predictions"]["y_true_sample"][:, [COL_IDX]]
-            y_pred = res["heldout_predictions"]["y_pred_sample"][:, [COL_IDX]]
-            yts = y_true.ravel(); yps = y_pred.ravel()
-            mets = _metrics(yts, yps)
-            hp_str = _ac_tag(hp)
-
-            out_xlsx = os.path.join(model_dir, f"{hp_str}.xlsx")
-            pd.DataFrame({f"{target_col}__true": yts, f"{target_col}__pred": yps}).to_excel(out_xlsx, index=False)
-
-            metrics_rows.append({
-                "target": target_col, "model": "acfnn", "preprocessing": mlabel, "hp": hp_str,
-                **mets
-            })
-
-            score = mets["rmse"]
-            if score < best[0]:
-                best = (score, "acfnn", methods, hp_str, res, {"pred_path": out_xlsx})
-
-        # ---- iPLS: evaluate every (components, intervals) combo ----
-        model_dir = os.path.join(pred_root, f"ipls__{mpath}")
-        os.makedirs(model_dir, exist_ok=True)
-        for c in IPLS_COMPONENTS:
-            for I in IPLS_INTERVALS:
-                res = rm.run_ipls_global(
+        if RUN_RF:
+            model_dir = os.path.join(pred_root, f"rf__{mpath}")
+            os.makedirs(model_dir, exist_ok=True)
+            for hp in RF_GRID:
+                res = rm.run_rf_global(
                     preprocess_methods=methods,
-                    n_components_list=[c],
-                    num_intervals_list=[I],
+                    rf_param_list=[hp],
                     n_splits=10,
                     target_order=TARGET_ORDER_ONE,
                 )
@@ -244,27 +194,103 @@ for nice_name, target_col in TARGETS:
                 y_pred = res["heldout_predictions"]["y_pred_sample"][:, [COL_IDX]]
                 yts = y_true.ravel(); yps = y_pred.ravel()
                 mets = _metrics(yts, yps)
-                hp_str = f"C={c}__I={I}"
-
+                hp_str = _rf_tag(hp)
+    
                 out_xlsx = os.path.join(model_dir, f"{hp_str}.xlsx")
                 pd.DataFrame({f"{target_col}__true": yts, f"{target_col}__pred": yps}).to_excel(out_xlsx, index=False)
-
+    
                 metrics_rows.append({
-                    "target": target_col, "model": "ipls", "preprocessing": mlabel, "hp": hp_str,
+                    "target": target_col, "model": "rf", "preprocessing": mlabel, "hp": hp_str,
                     **mets
                 })
-
+    
                 score = mets["rmse"]
                 if score < best[0]:
-                    best = (score, "ipls", methods, hp_str, res, {"pred_path": out_xlsx})
+                    best = (score, "rf", methods, hp_str, res, {"pred_path": out_xlsx})
+
+        # ---- AC-FNN: evaluate every HP in the grid ----
+        if RUN_ACFNN:
+            model_dir = os.path.join(pred_root, f"acfnn__{mpath}")
+            os.makedirs(model_dir, exist_ok=True)
+            for hp in ACFNN_GRID:
+                res = rm.run_acfnn_global(
+                    preprocess_methods=methods,
+                    acfnn_param_list=[hp],
+                    n_splits=10,
+                    target_order=TARGET_ORDER_ONE,
+                )
+                y_true = res["heldout_predictions"]["y_true_sample"][:, [COL_IDX]]
+                y_pred = res["heldout_predictions"]["y_pred_sample"][:, [COL_IDX]]
+                yts = y_true.ravel(); yps = y_pred.ravel()
+                mets = _metrics(yts, yps)
+                hp_str = _ac_tag(hp)
+    
+                out_xlsx = os.path.join(model_dir, f"{hp_str}.xlsx")
+                pd.DataFrame({f"{target_col}__true": yts, f"{target_col}__pred": yps}).to_excel(out_xlsx, index=False)
+    
+                metrics_rows.append({
+                    "target": target_col, "model": "acfnn", "preprocessing": mlabel, "hp": hp_str,
+                    **mets
+                })
+    
+                score = mets["rmse"]
+                if score < best[0]:
+                    best = (score, "acfnn", methods, hp_str, res, {"pred_path": out_xlsx})
+
+        # ---- iPLS: evaluate every (components, intervals) combo ----
+        if RUN_IPLS:
+            model_dir = os.path.join(pred_root, f"ipls__{mpath}")
+            os.makedirs(model_dir, exist_ok=True)
+            for c in IPLS_COMPONENTS:
+                for I in IPLS_INTERVALS:
+                    res = rm.run_ipls_global(
+                        preprocess_methods=methods,
+                        n_components_list=[c],
+                        num_intervals_list=[I],
+                        n_splits=10,
+                        target_order=TARGET_ORDER_ONE,
+                    )
+                    y_true = res["heldout_predictions"]["y_true_sample"][:, [COL_IDX]]
+                    y_pred = res["heldout_predictions"]["y_pred_sample"][:, [COL_IDX]]
+                    yts = y_true.ravel(); yps = y_pred.ravel()
+                    mets = _metrics(yts, yps)
+                    hp_str = f"C={c}__I={I}"
+    
+                    out_xlsx = os.path.join(model_dir, f"{hp_str}.xlsx")
+                    pd.DataFrame({f"{target_col}__true": yts, f"{target_col}__pred": yps}).to_excel(out_xlsx, index=False)
+    
+                    metrics_rows.append({
+                        "target": target_col, "model": "ipls", "preprocessing": mlabel, "hp": hp_str,
+                        **mets
+                    })
+    
+                    score = mets["rmse"]
+                    if score < best[0]:
+                        best = (score, "ipls", methods, hp_str, res, {"pred_path": out_xlsx})
 
     # --- Write consolidated METRICS for this target (all combos) -------------
-    metrics_df = pd.DataFrame(metrics_rows).sort_values(by=["rmse", "model", "preprocessing", "hp"]).reset_index(drop=True)
+    if metrics_rows:
+        metrics_df = (
+            pd.DataFrame(metrics_rows)
+            .sort_values(by=["rmse", "model", "preprocessing", "hp"])
+            .reset_index(drop=True)
+        )
+    else:
+        # write an empty sheet with expected columns so downstream tooling doesn't break
+        metrics_df = pd.DataFrame(
+            columns=["target", "model", "preprocessing", "hp", "rmse", "r2", "mae", "medae", "evs"]
+        )
+    
     metrics_path = os.path.join(tgt_root, f"{target_col}__metrics_all_combos.xlsx")
     metrics_df.to_excel(metrics_path, index=False)
     print(f"[METRICS] wrote {metrics_path}  ({len(metrics_df)} combos)")
-
+    
     # --- Winner artifacts: parity plot (with error bars) + tidy predictions ---
+    if best is None:
+        print(f"[WARN] No models were enabled for {nice_name}. Skipping winner artifacts.")
+        continue
+    
+    # unpack the winner
     _, model_name, methods, hp_str, res_w, _paths = best
     y_true_full = res_w["heldout_predictions"]["y_true_sample"][:, [COL_IDX]]
     y_pred_full = res_w["heldout_predictions"]["y_pred_sample"][:, [COL_IDX]]
@@ -272,11 +298,11 @@ for nice_name, target_col in TARGETS:
     y_pred_std  = res_w["heldout_predictions"].get("y_pred_sample_std")
     y_true_std1 = None if y_true_std is None else y_true_std[:, [COL_IDX]]
     y_pred_std1 = None if y_pred_std is None else y_pred_std[:, [COL_IDX]]
-
+    
     methods_label = " + ".join(methods) if methods else "No Preprocessing"
     methods_path  = _safe_methods_path(methods)
     title_suffix  = f"{model_name.upper()} | {methods_label} | HP: {hp_str}"
-
+    
     # winner dir
     winner_dir = os.path.join(tgt_root, f"winner__{model_name}__{methods_path}")
     os.makedirs(winner_dir, exist_ok=True)
