@@ -3,6 +3,7 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from textwrap import wrap
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error
 
@@ -10,8 +11,8 @@ def parity_plot_sample_level(
     y_true_sample: np.ndarray,
     y_pred_sample: np.ndarray,
     *,
-    y_true_sample_std: np.ndarray | None = None,   # <-- optional x-error bars
-    y_pred_sample_std: np.ndarray | None = None,   # <-- optional y-error bars
+    y_true_sample_std: np.ndarray | None = None,   # optional x-error bars
+    y_pred_sample_std: np.ndarray | None = None,   # optional y-error bars
     target_names=("Splicing Index", "Hand Grip Strength (%)", "Average Ankle Dorsiflexion (%)"),
     out_dir: str | None = None,
     fname_prefix: str = "parity",
@@ -21,6 +22,7 @@ def parity_plot_sample_level(
     """
     Make K parity plots at sample level. If std arrays are provided (shape=N×K),
     draw error bars for each sample using xerr/yerr from the 9 spectra per sample.
+    Long titles are wrapped to avoid clipping; figures are saved with tight bounds.
     """
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
@@ -38,13 +40,13 @@ def parity_plot_sample_level(
         # Optional error bars per sample
         xerr = y_true_sample_std[:, j] if has_xerr else None
         yerr = y_pred_sample_std[:, j] if has_yerr else None
-        # Optional: drop NaNs before metrics/plotting
+
+        # Drop NaNs (protect metrics/plotting)
         mask = ~np.isnan(yt1) & ~np.isnan(yp1)
         if xerr is not None:
             mask &= ~np.isnan(xerr)
         if yerr is not None:
             mask &= ~np.isnan(yerr)
-        
         yt  = yt[mask].reshape(-1, 1)
         yp  = yp[mask].reshape(-1, 1)
         yt1 = yt1[mask]
@@ -56,14 +58,13 @@ def parity_plot_sample_level(
 
         # Fit line + metrics
         lr = LinearRegression().fit(yt, yp)
-        slope = float(np.ravel(lr.coef_)[0])     # <- flatten for safety
+        slope = float(np.ravel(lr.coef_)[0])
         intercept = float(lr.intercept_)
-        r2 = float(r2_score(yt1, yp1))           # <- use 1-D arrays
+        r2 = float(r2_score(yt1, yp1))
         rmse = float(np.sqrt(mean_squared_error(yt1, yp1)))
 
-
         # Figure
-        plt.figure(figsize=(6, 6))
+        plt.figure(figsize=(7.5, 7.5))  # more space for title
         if (xerr is not None) or (yerr is not None):
             plt.errorbar(yt1, yp1, xerr=xerr, yerr=yerr, fmt='o', alpha=0.85,
                          capsize=4, capthick=1, ecolor='gray', markersize=5)
@@ -74,25 +75,28 @@ def parity_plot_sample_level(
         grid = np.linspace(x_min, x_max, 200).reshape(-1, 1)
         plt.plot(grid, lr.predict(grid), 'r--', lw=2)        # best-fit line
         plt.plot([x_min, x_max], [x_min, x_max], 'k:', lw=1) # 45° line
-        plt.axis('equal')  # optional but recommended
+        plt.axis('equal')
 
         # Labels
         tname = target_names[j] if j < len(target_names) else f"Target {j+1}"
         title = tname + (f" — {title_suffix}" if title_suffix else "")
-        plt.title(title, fontweight="bold")
+        title_wrapped = "\n".join(wrap(title, width=60))
+        plt.title(title_wrapped, fontweight="bold", fontsize=13, pad=12)
         plt.xlabel(f"Actual {tname}", fontweight="bold")
         plt.ylabel(f"Predicted {tname}", fontweight="bold")
 
-        # Stats box (now includes RMSE)
+        # Stats box
         legend_txt = f"RMSE: {rmse:.3f}\nR²: {r2:.3f}\nSlope: {slope:.2f}\nIntercept: {intercept:.2f}"
         plt.legend([legend_txt], loc='lower right', frameon=True, fancybox=True,
                    framealpha=0.6, handlelength=0, handletextpad=0)
 
-        plt.tight_layout()
+        # Layout & save (tight to avoid clipping)
+        plt.tight_layout(rect=[0, 0, 1, 0.94])
         if out_dir:
             fp = os.path.join(out_dir, f"{fname_prefix}_{j+1}.png")
-            plt.savefig(fp, dpi=dpi)
+            plt.savefig(fp, dpi=dpi, bbox_inches="tight", pad_inches=0.2)
         plt.close()
+
 def save_outer_predictions_excel(
     y_true_sample: np.ndarray,
     y_pred_sample: np.ndarray,
@@ -103,7 +107,7 @@ def save_outer_predictions_excel(
     y_pred_sample_std: np.ndarray | None = None,
 ):
     """
-    Save a tidy table of held-out *sample-level* predictions (and meta, if provided).
+    Save a tidy table of held-out sample-level predictions (and meta, if provided).
     Optionally includes per-sample std columns for error bars.
 
     Columns per target:
