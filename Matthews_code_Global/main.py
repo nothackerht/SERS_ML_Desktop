@@ -205,7 +205,7 @@ for nice_name, target_col in TARGETS:
                 })
     
                 score = mets["rmse"]
-                if score < best[0]:
+                if (best is None) or (score < best[0]):
                     best = (score, "rf", methods, hp_str, res, {"pred_path": out_xlsx})
 
         # ---- AC-FNN: evaluate every HP in the grid ----
@@ -234,7 +234,7 @@ for nice_name, target_col in TARGETS:
                 })
     
                 score = mets["rmse"]
-                if score < best[0]:
+                if (best is None) or (score < best[0]):
                     best = (score, "acfnn", methods, hp_str, res, {"pred_path": out_xlsx})
 
         # ---- iPLS: evaluate every (components, intervals) combo ----
@@ -265,7 +265,7 @@ for nice_name, target_col in TARGETS:
                     })
     
                     score = mets["rmse"]
-                    if score < best[0]:
+                    if (best is None) or (score < best[0]):
                         best = (score, "ipls", methods, hp_str, res, {"pred_path": out_xlsx})
 
     # --- Write consolidated METRICS for this target (all combos) -------------
