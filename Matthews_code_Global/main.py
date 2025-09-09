@@ -18,8 +18,8 @@ from modules.data_loader import load_data
 from modules.plot_parity import parity_plot_sample_level, save_outer_predictions_excel
 
 # ── Paths ───────────────────────────────────────────────────────────────────
-DATA_DIR  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data"
-META_PATH = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata.csv"
+DATA_DIR  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\data"
+META_PATH = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata.csv"
 OUT_DIR   = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Matthews_code_Global\results_global_hp_per_target"
 os.makedirs(OUT_DIR, exist_ok=True)
 
@@ -94,9 +94,9 @@ ACFNN_GRID = [
     {"hidden_layer_sizes": (256, 256, 128),   "activation": "relu", "alpha": 1e-5, "learning_rate_init": 1e-3, "batch_size": 128, "max_iter": 300},
 ]
 # ── Which models to run ─────────────────────────────────────────────────────
-RUN_PLS   = False
-RUN_RF    = False
-RUN_ACFNN = False
+RUN_PLS   = True 
+RUN_RF    = True 
+RUN_ACFNN = True 
 RUN_IPLS  = True   # ← only run iPLS
 
 
