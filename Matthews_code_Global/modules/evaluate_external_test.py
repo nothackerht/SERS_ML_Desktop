@@ -21,7 +21,12 @@ import os, re, json
 import numpy as np
 import pandas as pd
 from pathlib import Path
-
+# --- bootstrap project root onto sys.path ---
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]  # one level above /modules
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 # --- Your modules ---
 from modules.data_loader import load_data                                   # :contentReference[oaicite:0]{index=0}
 from modules.preprocessing import Preprocessing                              # :contentReference[oaicite:1]{index=1}
@@ -35,7 +40,7 @@ from sklearn.cross_decomposition import PLSRegression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.neural_network import MLPRegressor
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, median_absolute_error, explained_variance_score
-
+import matplotlib.pyplot as plt
 
 # --------------------------- CONFIG ---------------------------
 
@@ -356,8 +361,9 @@ def main():
             fname_prefix="external_parity",
             dpi=600,
             title_suffix=title_suffix,
+            
         )  # :contentReference[oaicite:9]{index=9}
-
+        plt.show()
         # 3b) Tidy Excel (one sheet)
         tidy_path = os.path.join(tgt_dir, f"{tcol}__external_predictions.xlsx")
         save_outer_predictions_excel(
