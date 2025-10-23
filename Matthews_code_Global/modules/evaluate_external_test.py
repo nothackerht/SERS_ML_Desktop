@@ -16,7 +16,7 @@ For each target (SI, HGS, ADF):
   - Predict the EXTERNAL test set
   - Save: parity plot (with y-error bars from replicate predictions), Excel of predictions, metrics .json
 """
-
+from pandas import ExcelWriter
 import os, re, json
 import numpy as np
 import pandas as pd
@@ -56,7 +56,12 @@ TEST_DATA_DIR  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\D
 GLOBAL_RESULTS_DIR = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Matthews_code_Global\results_global_hp_per_target"
 
 # Output root for this script
-OUT_DIR_EXTERNAL = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\external_test_eval"
+# USE IF  INCLUDING CONTROLS: 
+# OUT_DIR_EXTERNAL = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\external_test_eval"
+# os.makedirs(OUT_DIR_EXTERNAL, exist_ok=True)
+#Use if excluding controls: 
+# Output root for this script
+OUT_DIR_EXTERNAL = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\external_test_eval\Without controls"
 os.makedirs(OUT_DIR_EXTERNAL, exist_ok=True)
 
 # Targets: (nice name, metadata column)
@@ -269,27 +274,41 @@ def _compute_metrics(y_true: np.ndarray, y_pred: np.ndarray):
 
 def main():
     # 1) Load TRAIN + TEST with consistent alignment & safety checks
-    #    (same loader you already use)  :contentReference[oaicite:6]{index=6}
-    #    We drop rows with missing target per-target when we build Y below.
+    # TRAIN (DM1 only)
     wn_tr, avg_tr, all_tr, meta_tr = load_data(
         data_dir=TRAIN_DATA_DIR,
         metadata_path=TRAIN_META_PATH,
-        include_types=("DM1", "Control"),
+        include_types=("DM1",),        # DM1 only
         return_filenames=False,
         strict=False,
         report_samples=3,
     )
+
+    # TRAIN safety check
+    if "Type" in meta_tr.columns:
+        bad = set(meta_tr["Type"].astype(str)) - {"DM1"}
+        assert not bad, f"Unexpected TRAIN types present: {bad}"
+
+    # TEST (DM1 only — you said there are no controls)
     wn_te, avg_te, all_te, meta_te = load_data(
         data_dir=TEST_DATA_DIR,
         metadata_path=TEST_META_PATH,
-        include_types=("DM1", "Control"),
+        include_types=("DM1",),        # DM1 only
         return_filenames=False,
         strict=False,
         report_samples=3,
     )
+
+    # TEST safety check
+    if "Type" in meta_te.columns:
+        bad = set(meta_te["Type"].astype(str)) - {"DM1"}
+        assert not bad, f"Unexpected TEST types present: {bad}"
+
+    # Always transpose AFTER the safety checks, not inside them
     # Shapes: all_* are (1731, 9N). Transpose to (9N, 1731) for model fit.
     Xtr_full = all_tr.T
     Xte_full = all_te.T
+
 
     # Replicate grouping for TRAIN (needed by iPLS interval selection)
     Ntr = meta_tr.shape[0]
@@ -364,17 +383,48 @@ def main():
             
         )  # :contentReference[oaicite:9]{index=9}
         plt.show()
-        # 3b) Tidy Excel (one sheet)
+        # 3b) Excel with meta + actual/pred columns (robust to missing columns)
+        # Build a copy of the kept metadata rows in TEST order
+        meta_kept = meta_te.loc[te_keep].copy()
+
+        # If Sample_ID isn't a column (but is index), materialize it
+        if "Sample_ID" not in meta_kept.columns:
+            # Try common id-like columns; else fall back to index
+            if meta_kept.index.name and meta_kept.index.name not in meta_kept.columns:
+                meta_kept.insert(0, meta_kept.index.name, meta_kept.index.astype(str))
+                meta_kept.rename(columns={meta_kept.index.name: "Sample_ID"}, inplace=True)
+            else:
+                meta_kept.insert(0, "Sample_ID", meta_kept.index.astype(str))
+
+        # Optionally bring 'FilePrefix' to the front if it exists
+        front_cols = [c for c in ["FilePrefix", "Sample_ID"] if c in meta_kept.columns]
+        other_cols = [c for c in meta_kept.columns if c not in front_cols]
+        meta_kept = meta_kept[front_cols + other_cols]
+
+        # Attach actual/pred columns with the target-specific names
+        meta_kept[f"{tcol}__true"] = y_true_s.astype(float)
+        meta_kept[f"{tcol}__pred"] = y_pred_s.astype(float)
+        meta_kept[f"{tcol}__pred_std"] = y_pred_std.astype(float)
+
+        # Save to Excel (sheet1: predictions; sheet2: metrics summary)
         tidy_path = os.path.join(tgt_dir, f"{tcol}__external_predictions.xlsx")
-        save_outer_predictions_excel(
-            y_true_sample=y_true_s.reshape(-1,1),
-            y_pred_sample=y_pred_s.reshape(-1,1),
-            meta_kept=meta_te.loc[te_keep].reset_index(drop=True),
-            target_order=(tcol,),
-            out_path=tidy_path,
-            y_true_sample_std=None,
-            y_pred_sample_std=y_pred_std.reshape(-1,1),
-        )  # :contentReference[oaicite:10]{index=10}
+        with ExcelWriter(tidy_path, engine="xlsxwriter") as xw:
+            # predictions sheet (your example layout)
+            meta_kept.to_excel(xw, sheet_name="predictions", index=False)
+
+            # metrics sheet (flatten for readability)
+            mets_df = (
+                pd.DataFrame([{
+                    "model": model_name,
+                    "preprocessing": " + ".join(methods_list) if methods_list else "No Preprocessing",
+                    "hp_str": hp_str,
+                    **mets
+                }])
+            )
+            mets_df.to_excel(xw, sheet_name="metrics", index=False)
+
+        print(f"     excel → {tidy_path}")
+
 
         # 3c) Metrics JSON
         with open(os.path.join(tgt_dir, f"{tcol}__external_metrics.json"), "w") as f:

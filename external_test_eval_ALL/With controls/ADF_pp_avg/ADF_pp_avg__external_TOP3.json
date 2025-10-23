@@ -1,0 +1,44 @@
+[
+  {
+    "model": "ipls",
+    "preprocessing": "Second Derivative + Normalization",
+    "hp": "C=3__I=5",
+    "rmse": 33.007632438312726,
+    "r2": 0.23820509678465873,
+    "mae": 29.59774524914276,
+    "medae": 27.446374222955427,
+    "evs": 0.24516378862629307,
+    "slope": 0.14268931034632087,
+    "intercept": 49.82198997454426,
+    "interval_a": 0.0,
+    "interval_b": 346.0
+  },
+  {
+    "model": "ipls",
+    "preprocessing": "Second Derivative + SNV",
+    "hp": "C=3__I=5",
+    "rmse": 33.03125131990895,
+    "r2": 0.23711448956944692,
+    "mae": 29.628941067306013,
+    "medae": 27.45250001791659,
+    "evs": 0.24368185974665169,
+    "slope": 0.14220281987725064,
+    "intercept": 49.75848603766986,
+    "interval_a": 0.0,
+    "interval_b": 346.0
+  },
+  {
+    "model": "ipls",
+    "preprocessing": "Second Derivative + Normalization",
+    "hp": "C=4__I=5",
+    "rmse": 33.13222766673247,
+    "r2": 0.23244308693559546,
+    "mae": 29.515032693123946,
+    "medae": 26.985139575843597,
+    "evs": 0.24339649927450369,
+    "slope": 0.14092488994572241,
+    "intercept": 50.721275276032685,
+    "interval_a": 0.0,
+    "interval_b": 346.0
+  }
+]

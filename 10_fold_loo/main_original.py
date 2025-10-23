@@ -1028,12 +1028,12 @@ print("First 2 entries:", xgb_grid[:2])
 # # ── Models to try (include or comment out as you like) ───────────────────────
 model_list = [
     'sipls',
-    # 'random_forest',
-    # 'svr',
-    # 'xgboost',
-    # 'mlp',
-    # 'knn',
-    # 'gpr'
+    'random_forest',
+    'svr',
+    'xgboost',
+    'mlp',
+    'knn',
+    'gpr'
 ]
 
 # # =============================================================================
@@ -1107,12 +1107,12 @@ param_grid = {
 # ]
 preprocess_grid = [
     [],                    # no preprocessing
-    # ['EMSC'],
-    # ['SNV'],
-    # ['Normalization'],
-    # ['Second Derivative'],
-    # ['EMSC', 'SNV'],
-    # ['SNV', 'Second Derivative']
+    ['EMSC'],
+    ['SNV'],
+    ['Normalization'],
+    ['Second Derivative'],
+    ['EMSC', 'SNV'],
+    ['SNV', 'Second Derivative']
 ]
 # OG preprocessing
 # [
@@ -1156,10 +1156,11 @@ targets = [
 # =============================================================================
 for nice_name, col in targets:
     out_dir_col = os.path.join(results_root, f'10_fold_LOO_{col}')
-
-    print(f"\n\n### Running LOO for {nice_name} ({col}) – saving to: {out_dir_col}")
-    loo_df, loo_metrics = leave_one_out_test_evaluation(
-        train_data_dir   = data_directory,
+#==============================================
+# Run the Leave-One-Out evaluator for each target
+# =============================================================================
+for nice_name, col in targets:
+    out_dir_col = os.path.join(res = data_directory,
         train_meta_path  = meta_data_directory,
         test_data_dir    = external_test_spectra_path,
         test_meta_path   = external_test_metadata_path,

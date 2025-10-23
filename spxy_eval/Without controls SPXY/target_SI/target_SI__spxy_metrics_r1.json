@@ -1,0 +1,19 @@
+{
+  "model": "ipls",
+  "preprocessing": [],
+  "hp_str": "C=8__I=10",
+  "hp": {
+    "n_components": 8,
+    "num_intervals": 10
+  },
+  "alpha": 0.5,
+  "cal_frac": 0.8,
+  "repeat": 1,
+  "metrics_sample_level": {
+    "rmse": 0.146321630227361,
+    "r2": 0.5664037460586564,
+    "mae": 0.13341416420760402,
+    "medae": 0.13171964493089192,
+    "evs": 0.5794215948364034
+  }
+}

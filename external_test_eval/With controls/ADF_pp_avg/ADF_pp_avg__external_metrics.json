@@ -1,0 +1,17 @@
+{
+  "model": "pls",
+  "preprocessing": [
+    "Second Derivative"
+  ],
+  "hp_str": "C=4",
+  "hp": {
+    "n_components": 4
+  },
+  "metrics_sample_level": {
+    "rmse": 36.54525131788656,
+    "r2": 0.0661626946244509,
+    "mae": 31.488674475592585,
+    "medae": 28.63284243200986,
+    "evs": 0.06923255428357755
+  }
+}

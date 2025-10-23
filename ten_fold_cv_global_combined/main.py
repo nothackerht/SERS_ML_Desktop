@@ -13,19 +13,19 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, median_absolute_error, explained_variance_score
 
-from modules.ten_fold_cv_regression_global import GlobalGroupedCV
+from modules.ten_fold_cv_regression_global_combined import GlobalGroupedCV
 from modules.data_loader import load_data
 from modules.plot_parity import parity_plot_sample_level, save_outer_predictions_excel
 
 # ── Paths ───────────────────────────────────────────────────────────────────
-DATA_DIR  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\data"
-META_PATH = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\Data\y_metadata.csv"
-OUT_DIR   = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Matthews_code_Global\results_global_hp_per_target"
+DATA_DIR  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\data"
+META_PATH = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata.csv"
+OUT_DIR   = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\ten_fold_cv_global_combined\box1and2withcontrols"
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # Which sample types to include (handled inside loader/regression as well)
 INCLUDE_TYPES = ("DM1", "Control")
-
+# INCLUDE_TYPES = ("DM1",)
 # ── Load data ────────────────────────────────────────────────────────────────
 wavenumbers, averaged_spectra, all_spectra, filenames_per_column, meta = load_data(
     data_dir=DATA_DIR,

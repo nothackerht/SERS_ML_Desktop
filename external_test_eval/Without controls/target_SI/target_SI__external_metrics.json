@@ -1,0 +1,19 @@
+{
+  "model": "ipls",
+  "preprocessing": [
+    "SNV",
+    "Second Derivative"
+  ],
+  "hp_str": "C=10__I=5",
+  "hp": {
+    "n_components": 10,
+    "num_intervals": 5
+  },
+  "metrics_sample_level": {
+    "rmse": 0.27928870256507454,
+    "r2": -0.06603050125735943,
+    "mae": 0.24245546090581635,
+    "medae": 0.18039802252787818,
+    "evs": -0.05130155132344383
+  }
+}

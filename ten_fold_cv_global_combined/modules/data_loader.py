@@ -149,6 +149,7 @@ def load_data(
     data_dir: str | Path,
     metadata_path: Optional[str | Path] = None,
     include_types: Iterable[str] = ("DM1", "Control"),
+    # include_types: Iterable[str] = ("DM1", ""),
     return_filenames: bool = False,
     strict: bool = True,
     report_samples: int = 5,

@@ -53,15 +53,15 @@ pca_output_dir = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\P
 os.makedirs(cls_output_dir, exist_ok=True)
 os.makedirs(pca_output_dir, exist_ok=True)
 
-# ── Classification settings ───────────────────────────────────────────────────
-# PLS-DA
-plsda_preprocess   = ['SNV', 'Normalization']
-plsda_n_components = 15
+# # ── Classification settings ───────────────────────────────────────────────────
+# # PLS-DA
+# plsda_preprocess   = ['SNV', 'Normalization']
+# plsda_n_components = 15
 
-# SVM
-svm_preprocess = ['SNV']
-svm_C          = 1.0
-svm_kernel     = 'linear'  # 'linear' or 'rbf', etc.
+# # SVM
+# svm_preprocess = ['SNV']
+# svm_C          = 1.0
+# svm_kernel     = 'linear'  # 'linear' or 'rbf', etc.
 
 # ── PCA suite (train/test overlays, severity coloring) ─────────────────────────
 def run_pca_suite(
@@ -136,14 +136,14 @@ def run_pca_suite(
 
         # 2) Train→Test projection using sklearn PCA directly
         #    (fit on preprocessed TRAIN; transform both TRAIN and TEST)
-        X_train_prep = (
-            Preprocessing(spectra_train).preprocess(methods=methods)
-            if methods else spectra_train
-        )
-        X_test_prep = (
-            Preprocessing(spectra_test).preprocess(methods=methods)
-            if methods else spectra_test
-        )
+        if methods:
+            pre = Preprocessing()                          # e.g., Preprocessing(ipls_threshold=0.0)
+            pre.fit(spectra_train, methods=methods)        # if you ever add IntervalPLS: pass y=..., groups=...
+            X_train_prep = pre.transform(spectra_train, methods=methods)
+            X_test_prep  = pre.transform(spectra_test,  methods=methods)
+        else:
+            X_train_prep, X_test_prep = spectra_train, spectra_test
+
 
         # sklearn expects samples×features
         Xtr = X_train_prep.T
@@ -187,16 +187,17 @@ def run_pca_suite(
                 s=28, alpha=0.80, marker='o', label='Train', zorder=2
             )
         
-            # Test = stars (large, outlined)
+            # Test = squares (large, outlined)
             ax.scatter(
                 combined_meta.loc[m_te, 'PC1'],
                 combined_meta.loc[m_te, 'PC2'],
                 c=combined_meta.loc[m_te, 'target_SI'],
                 cmap=cmap,
-                s=160, alpha=0.95, marker='*',
+                s=54, alpha=0.95, marker='s',   # <- was '*'
                 edgecolors='k', linewidths=0.5,
                 label='Test', zorder=3
             )
+
         
             # Shared colorbar
             vmin = combined_meta['target_SI'].min()
@@ -228,7 +229,7 @@ def run_pca_suite(
             ax.scatter(
                 combined_meta.loc[m_te, 'PC1'],
                 combined_meta.loc[m_te, 'PC2'],
-                s=160, alpha=0.95, marker='*',
+                s=56, alpha=0.95, marker='s',
                 color='tab:orange', edgecolors='k', linewidths=0.5,
                 label='Test', zorder=3
             )
@@ -247,74 +248,75 @@ def run_pca_suite(
 
 def main():
     # Determine which sample types to load based on config
-    include_types = ("DM1",) + tuple(CONTROL_LABELS) if USE_CONTROLS else ("DM1",)
+    # include_types = ("DM1",) + tuple(CONTROL_LABELS) if USE_CONTROLS else ("DM1",)
+    include_types = ("DM1",)
     print(f"[CLASS] USE_CONTROLS={USE_CONTROLS} | CONTROL_LABELS={tuple(CONTROL_LABELS)}")
     print(f"[CLASS] include_types={include_types}")
 
-    # ───────────────────────── Classification on COMBINED set ──────────────────
-    print("\n[CLASS] Loading COMBINED dataset for classification…")
-    _, _, X_combined, combined_filenames, meta_combined = load_data(
-        data_dir=classification_data_dir_combined,
-        metadata_path=classification_meta_path_combined,
-        include_types=include_types,
-        return_filenames=True,
-        strict=False,
-        report_samples=5,
-    )
+    # # ───────────────────────── Classification on COMBINED set ──────────────────
+    # print("\n[CLASS] Loading COMBINED dataset for classification…")
+    # _, _, X_combined, combined_filenames, meta_combined = load_data(
+    #     data_dir=classification_data_dir_combined,
+    #     metadata_path=classification_meta_path_combined,
+    #     include_types=include_types,
+    #     return_filenames=True,
+    #     strict=False,
+    #     report_samples=5,
+    # )
 
-    if 'Type' not in meta_combined.columns:
-        raise KeyError("Expected a 'Type' column in combined metadata; "
-                       f"available columns: {list(meta_combined.columns)}")
+    # if 'Type' not in meta_combined.columns:
+    #     raise KeyError("Expected a 'Type' column in combined metadata; "
+    #                    f"available columns: {list(meta_combined.columns)}")
 
-    type_series = meta_combined['Type'].astype(str)
-    n_dm1   = (type_series == 'DM1').sum()
-    n_ctrl  = type_series.isin(CONTROL_LABELS).sum()
-    n_total = len(type_series)
-    print(f"[LOAD][COMBINED] Total rows: {n_total} | DM1: {n_dm1} | Controls (aliases={tuple(CONTROL_LABELS)}): {n_ctrl}")
+    # type_series = meta_combined['Type'].astype(str)
+    # n_dm1   = (type_series == 'DM1').sum()
+    # n_ctrl  = type_series.isin(CONTROL_LABELS).sum()
+    # n_total = len(type_series)
+    # print(f"[LOAD][COMBINED] Total rows: {n_total} | DM1: {n_dm1} | Controls (aliases={tuple(CONTROL_LABELS)}): {n_ctrl}")
 
-    if n_dm1 == 0 or (USE_CONTROLS and n_ctrl == 0):
-        print("[CLASS] Not enough classes in the COMBINED set for classification.")
-        return
+    # if n_dm1 == 0 or (USE_CONTROLS and n_ctrl == 0):
+    #     print("[CLASS] Not enough classes in the COMBINED set for classification.")
+    #     return
 
-    clf = Classifier(all_spectra=X_combined, y_label_df=meta_combined)
+    # clf = Classifier(all_spectra=X_combined, y_label_df=meta_combined)
 
-    # PLS-DA (LOSOCV) on COMBINED
-    print("\n[CLASS] Running PLS-DA (LOSOCV) on COMBINED…")
-    roc_auc_plsda, y_test_plsda, y_pred_proba_plsda = clf.pls_da_losocv(
-        preprocess_methods=plsda_preprocess,
-        n_components=plsda_n_components,
-        save_plots=True,
-        output_dir=cls_output_dir
-    )
-    print(f"[CLASS][PLS-DA][COMBINED] ROC AUC (LOSOCV): {roc_auc_plsda:.4f}")
+    # # PLS-DA (LOSOCV) on COMBINED
+    # print("\n[CLASS] Running PLS-DA (LOSOCV) on COMBINED…")
+    # roc_auc_plsda, y_test_plsda, y_pred_proba_plsda = clf.pls_da_losocv(
+    #     preprocess_methods=plsda_preprocess,
+    #     n_components=plsda_n_components,
+    #     save_plots=True,
+    #     output_dir=cls_output_dir
+    # )
+    # print(f"[CLASS][PLS-DA][COMBINED] ROC AUC (LOSOCV): {roc_auc_plsda:.4f}")
 
-    # SVM (LOSOCV) on COMBINED
-    print("\n[CLASS] Running SVM (LOSOCV) on COMBINED…")
-    roc_auc_svm, y_test_svm, y_pred_proba_svm = clf.svm_losocv(
-        preprocess_methods=svm_preprocess,
-        C=svm_C,
-        kernel=svm_kernel,
-        save_plots=True,
-        output_dir=cls_output_dir
-    )
-    print(f"[CLASS][SVM][COMBINED] ROC AUC (LOSOCV): {roc_auc_svm:.4f}")
+    # # SVM (LOSOCV) on COMBINED
+    # print("\n[CLASS] Running SVM (LOSOCV) on COMBINED…")
+    # roc_auc_svm, y_test_svm, y_pred_proba_svm = clf.svm_losocv(
+    #     preprocess_methods=svm_preprocess,
+    #     C=svm_C,
+    #     kernel=svm_kernel,
+    #     save_plots=True,
+    #     output_dir=cls_output_dir
+    # )
+    # print(f"[CLASS][SVM][COMBINED] ROC AUC (LOSOCV): {roc_auc_svm:.4f}")
 
-    # Save raw LOSOCV outputs (tagged as combined)
-    out_pls = os.path.join(cls_output_dir, "plsda_losocv_outputs_COMBINED.npz")
-    np.savez_compressed(out_pls,
-        y_test=np.array(y_test_plsda),
-        y_pred_proba=np.array(y_pred_proba_plsda),
-        roc_auc=np.array([roc_auc_plsda])
-    )
-    print(f"[CLASS][PLS-DA] Saved raw outputs → {out_pls}")
+    # # Save raw LOSOCV outputs (tagged as combined)
+    # out_pls = os.path.join(cls_output_dir, "plsda_losocv_outputs_COMBINED.npz")
+    # np.savez_compressed(out_pls,
+    #     y_test=np.array(y_test_plsda),
+    #     y_pred_proba=np.array(y_pred_proba_plsda),
+    #     roc_auc=np.array([roc_auc_plsda])
+    # )
+    # print(f"[CLASS][PLS-DA] Saved raw outputs → {out_pls}")
 
-    out_svm = os.path.join(cls_output_dir, "svm_losocv_outputs_COMBINED.npz")
-    np.savez_compressed(out_svm,
-        y_test=np.array(y_test_svm),
-        y_pred_proba=np.array(y_pred_proba_svm),
-        roc_auc=np.array([roc_auc_svm])
-    )
-    print(f"[CLASS][SVM] Saved raw outputs → {out_svm}")
+    # out_svm = os.path.join(cls_output_dir, "svm_losocv_outputs_COMBINED.npz")
+    # np.savez_compressed(out_svm,
+    #     y_test=np.array(y_test_svm),
+    #     y_pred_proba=np.array(y_pred_proba_svm),
+    #     roc_auc=np.array([roc_auc_svm])
+    # )
+    # print(f"[CLASS][SVM] Saved raw outputs → {out_svm}")
 
     # ──────────────────────────── PCA on separate sets ─────────────────────────
     print("\n[PCA] Running PCA analyses (train/test overlays) on separate sets…")

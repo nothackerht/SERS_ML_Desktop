@@ -1,0 +1,22 @@
+{
+  "model": "ipls",
+  "preprocessing": [
+    "EMSC",
+    "Second Derivative"
+  ],
+  "hp_str": "C=9__I=10",
+  "hp": {
+    "n_components": 9,
+    "num_intervals": 10
+  },
+  "alpha": 0.5,
+  "cal_frac": 0.8,
+  "repeat": 1,
+  "metrics_sample_level": {
+    "rmse": 19.127529414149237,
+    "r2": 0.6546816747835191,
+    "mae": 17.256818119560148,
+    "medae": 17.971422357068203,
+    "evs": 0.6581421249563304
+  }
+}

@@ -1,0 +1,16 @@
+[
+  {
+    "model": "ipls",
+    "preprocessing": "Normalization + Second Derivative",
+    "hp": "C=4__I=5",
+    "rmse": 23.492522280197754,
+    "r2": 0.42085874881227814,
+    "mae": 19.987518887132374,
+    "medae": 15.952621681216822,
+    "evs": 0.4482007278809038,
+    "slope": 0.3619230472537583,
+    "intercept": 34.571067973589486,
+    "interval_a": 1038.0,
+    "interval_b": 1384.0
+  }
+]

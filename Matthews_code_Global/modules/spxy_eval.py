@@ -44,11 +44,21 @@ from sklearn.preprocessing import StandardScaler
 
 TRAIN_DATA_DIR  = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\data"
 TRAIN_META_PATH = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Data\y_metadata.csv"
+# --- GLOBAL RESULTS SOURCE (NO CONTROLS, BOX 1 & 2) ---
+from pathlib import Path
+GLOBAL_RESULTS_DIR_NO_CONTROLS = Path(
+    r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\ten_fold_cv_global_combined\box1and2nocontrols"
+)
 
-GLOBAL_RESULTS_DIR = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Matthews_code_Global\results_global_hp_per_target"
 
-OUT_DIR_SPXY = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\spxy_eval"
+
+# Global results with controls: 
+# GLOBAL_RESULTS_DIR_NO_CONTROLS = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Matthews_code_Global\results_global_hp_per_target"
+
+OUT_DIR_SPXY = r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\spxy_eval\Without controls SPXY"
 os.makedirs(OUT_DIR_SPXY, exist_ok=True)
+
+
 
 TARGETS = [
     ("Splicing Index", "target_SI"),
@@ -234,10 +244,20 @@ def _spxy_split(Xsamp, ysamp, cal_frac=0.8, alpha=0.5, seed=None):
 # ---------------------- MAIN ----------------------
 
 def main():
+    # Includes controls
+    # wn, avg_tr, all_tr, meta = load_data(
+    #     data_dir=TRAIN_DATA_DIR,
+    #     metadata_path=TRAIN_META_PATH,
+    #     include_types=("DM1", "Control"),
+    #     return_filenames=False,
+    #     strict=False,
+    #     report_samples=3,
+    # )
+# AFTER  (DM1 only)
     wn, avg_tr, all_tr, meta = load_data(
         data_dir=TRAIN_DATA_DIR,
         metadata_path=TRAIN_META_PATH,
-        include_types=("DM1", "Control"),
+        include_types=("DM1",),   # <- only DM1
         return_filenames=False,
         strict=False,
         report_samples=3,
@@ -270,8 +290,46 @@ def main():
 
 
         # winner row from leaderboard
-        metrics_path = os.path.join(GLOBAL_RESULTS_DIR, tcol, f"{tcol}__metrics_all_combos.xlsx")
+        # Map internal column → file stem
+        TARGET_FILE_STEMS = {
+            "target_SI":  "SI",
+            "HGS_pp_avg": "HGS",
+            "ADF_pp_avg": "ADF",
+        }
+        
+        stem = TARGET_FILE_STEMS.get(tcol, tcol)
+        
+        # Try common filenames in the flat folder
+        candidates = [
+            GLOBAL_RESULTS_DIR_NO_CONTROLS / f"{stem}_all_combos.xlsx",           # SI/HGS/ADF_all_combos.xlsx
+            GLOBAL_RESULTS_DIR_NO_CONTROLS / f"{tcol}_all_combos.xlsx",           # target_SI_all_combos.xlsx
+            GLOBAL_RESULTS_DIR_NO_CONTROLS / f"{tcol}__metrics_all_combos.xlsx",  # legacy style
+        ]
+        
+        # winner row from leaderboard (per-target subfolder)
+        metrics_path = (GLOBAL_RESULTS_DIR_NO_CONTROLS / tcol / f"{tcol}__metrics_all_combos.xlsx")
+        
+        # fallbacks (if you ever change filenames)
+        if not metrics_path.exists():
+            alt1 = GLOBAL_RESULTS_DIR_NO_CONTROLS / f"{tcol}__metrics_all_combos.xlsx"
+            alt2 = GLOBAL_RESULTS_DIR_NO_CONTROLS / tcol / f"{tcol}_all_combos.xlsx"
+            for cand in (alt1, alt2):
+                if cand.exists():
+                    metrics_path = cand
+                    break
+        
+        if not metrics_path.exists():
+            raise FileNotFoundError(
+                f"Could not find leaderboard for {tcol}.\n"
+                f"Tried:\n  {GLOBAL_RESULTS_DIR_NO_CONTROLS / tcol / f'{tcol}__metrics_all_combos.xlsx'}\n"
+                f"  {GLOBAL_RESULTS_DIR_NO_CONTROLS / f'{tcol}__metrics_all_combos.xlsx'}\n"
+                f"  {GLOBAL_RESULTS_DIR_NO_CONTROLS / tcol / f'{tcol}_all_combos.xlsx'}"
+            )
+        
+        print(f"[INFO] Using leaderboard for {tcol}: {metrics_path}")
         dfm = pd.read_excel(metrics_path)
+
+
         # ---- add this guard RIGHT HERE ----
         if dfm is None or dfm.empty:
             raise FileNotFoundError(f"No rows in metrics file: {metrics_path}")
