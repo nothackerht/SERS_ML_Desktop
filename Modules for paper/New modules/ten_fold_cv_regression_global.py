@@ -31,7 +31,7 @@ import torch.optim as optim
 from sklearn.model_selection import GroupKFold
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.neural_network import MLPRegressor as ACFNNRegressor
+
 from sklearn.metrics import (
     mean_squared_error, r2_score,
     mean_absolute_error, median_absolute_error, explained_variance_score,
@@ -128,6 +128,84 @@ def _is_simpler(model_a, hp_a, model_b, hp_b):
         hb = hp_b.get("hidden_layer_sizes", (128, 64))
         return (sum(ha), len(ha)) < (sum(hb), len(hb))
     return False
+
+class TorchRegressor:
+    """
+    Simple feedforward regressor with GPU support.
+    Expects a single target column.
+    API subset: .fit(X, y), .predict(X) returning shape (n,1)
+    """
+
+    def __init__(self,
+                 hidden_layer_sizes=(256,128),
+                 activation="relu",
+                 learning_rate_init=1e-3,
+                 alpha=1e-4,           # L2 weight decay
+                 max_iter=200,
+                 batch_size=64,
+                 random_state=42):
+        self.hidden_layer_sizes = hidden_layer_sizes
+        self.activation = activation
+        self.learning_rate_init = learning_rate_init
+        self.alpha = alpha
+        self.max_iter = max_iter
+        self.batch_size = batch_size
+        self.random_state = random_state
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model_ = None
+        self.input_dim_ = None
+
+    def _build_mlp(self, in_dim):
+        act_layer = nn.ReLU if self.activation == "relu" else nn.Tanh
+        layers = []
+        last = in_dim
+        for h in self.hidden_layer_sizes:
+            layers.append(nn.Linear(last, h))
+            layers.append(act_layer())
+            last = h
+        layers.append(nn.Linear(last, 1))
+        return nn.Sequential(*layers)
+
+    def fit(self, X, y):
+        rng = np.random.RandomState(self.random_state)
+        torch.manual_seed(self.random_state)
+
+        X = np.asarray(X, dtype=np.float32)
+        y = np.asarray(y, dtype=np.float32).reshape(-1, 1)
+
+        self.input_dim_ = X.shape[1]
+        self.model_ = self._build_mlp(self.input_dim_).to(self.device)
+
+        optimizer = optim.Adam(self.model_.parameters(),
+                               lr=self.learning_rate_init,
+                               weight_decay=self.alpha)
+        loss_fn = nn.MSELoss()
+
+        # minibatch training
+        n = X.shape[0]
+        idx_all = np.arange(n)
+
+        for epoch in range(self.max_iter):
+            rng.shuffle(idx_all)
+            for start in range(0, n, self.batch_size):
+                batch_idx = idx_all[start:start+self.batch_size]
+                xb = torch.from_numpy(X[batch_idx]).to(self.device)
+                yb = torch.from_numpy(y[batch_idx]).to(self.device)
+
+                optimizer.zero_grad()
+                pred = self.model_(xb)
+                loss = loss_fn(pred, yb)
+                loss.backward()
+                optimizer.step()
+
+        return self
+
+    def predict(self, X):
+        X = np.asarray(X, dtype=np.float32)
+        xb = torch.from_numpy(X).to(self.device)
+        with torch.no_grad():
+            pred = self.model_(xb).cpu().numpy()
+        return pred  # shape (n,1)
 
 
 # ====================== iPLS inner interval search (grouped) ======================
