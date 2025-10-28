@@ -464,8 +464,10 @@ if __name__ == "__main__":
                             rf = RandomForestRegressor(**hp, random_state=seed, n_jobs=-1)
                             rf.fit(Xt_tr, Yitr.ravel()); Yhat = rf.predict(Xt_va).reshape(-1, 1)
                         elif model_name == "acfnn":
-                            mlp = ACFNNRegressor(random_state=seed, **hp)
-                            mlp.fit(Xt_tr, Yitr.ravel()); Yhat = mlp.predict(Xt_va).reshape(-1, 1)
+                            mlp = TorchRegressor(random_state=seed, **hp)
+                            mlp.fit(Xt_tr, Yitr.ravel())
+                            Yhat = mlp.predict(Xt_va).reshape(-1, 1)
+
                         else:
                             raise ValueError(model_name)
 
