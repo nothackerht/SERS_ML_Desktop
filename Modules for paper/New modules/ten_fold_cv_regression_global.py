@@ -1,20 +1,32 @@
 # -*- coding: utf-8 -*-
 """
-Nested 10-Fold CV with Group-aware splitting and 1-SE model selection.
+Created on Thu Oct 23 20:48:44 2025
 
-- Outer: GroupKFold on samples (groups = sample ids)
-- Inner: GroupKFold on outer-train samples for HP selection (1-SE toward simplicity)
-- Models: PLS / RF / iPLS / AC-FNN(sklearn MLP fallback)
-- Per-combo predictions written to disk; consolidated metrics XLSX; parity & tidy preds for winner.
+@author: notha
+"""
 
-Compatible with main.py runner you shared.
+# -*- coding: utf-8 -*-
+"""
+Nested 10-Fold CV (group-aware) with 1-SE model selection.
+Runs once per (model, preprocessing) and saves:
+- selected.xlsx (outer test preds at sample level)
+- selection_trace.csv (per outer fold: μ, σ, chosen HP; iPLS logs intervals)
+- consolidated metrics sheet
+- parity plot + tidy preds for overall winner (per target)
+
+Compatible with your main.py launcher.
 """
 
 from dataclasses import dataclass
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Any
 import os
+import json
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
+import torch
+import torch.nn as nn
+import torch.optim as optim
 
 from sklearn.model_selection import GroupKFold
 from sklearn.cross_decomposition import PLSRegression
@@ -29,7 +41,7 @@ from sklearn.metrics import (
 from preprocessing import Preprocessing
 
 
-# ====================== Small utilities ======================
+# ====================== Utilities ======================
 
 def _metrics(y_true, y_pred) -> Dict[str, float]:
     y_true = np.asarray(y_true).ravel()
@@ -43,7 +55,6 @@ def _metrics(y_true, y_pred) -> Dict[str, float]:
     }
 
 def _groups_for_spectra(n_samples: int, reps: int = 9) -> np.ndarray:
-    # map spectra rows (9*N) to their sample id (0..N-1)
     return np.repeat(np.arange(n_samples, dtype=int), reps)
 
 def _sample_means_stds(y_like: np.ndarray, reps: int = 9):
@@ -84,6 +95,40 @@ def _ac_tag(hp: dict) -> str:
     return (f"hls{hls}_act{hp.get('activation','relu')}_bs{hp.get('batch_size','NA')}"
             f"_lr{hp.get('learning_rate_init','NA')}_wd{hp.get('alpha','0')}_mi{hp.get('max_iter','NA')}")
 
+def _pls_tag(hp: dict) -> str:
+    return f"C={int(hp['n_components'])}"
+
+def _ipls_tag(hp: dict) -> str:
+    return f"C={int(hp['n_components'])}__I={int(hp['num_intervals'])}"
+
+def _hp_tag(model: str, hp: dict) -> str:
+    m = model.lower()
+    if m == "pls": return _pls_tag(hp)
+    if m == "ipls": return _ipls_tag(hp)
+    if m == "rf": return _rf_tag(hp)
+    if m == "acfnn": return _ac_tag(hp)
+    return str(hp)
+
+def _is_simpler(model_a, hp_a, model_b, hp_b):
+    """Simplicity order used for 1-SE tie-breaking."""
+    order = {"pls": 0, "ipls": 1, "rf": 2, "acfnn": 3}
+    ma, mb = model_a.lower(), model_b.lower()
+    if ma != mb:
+        return order.get(ma, 99) < order.get(mb, 99)
+    if ma == "pls":
+        return int(hp_a["n_components"]) < int(hp_b["n_components"])
+    if ma == "ipls":
+        a = (int(hp_a["num_intervals"]), int(hp_a["n_components"]))
+        b = (int(hp_b["num_intervals"]), int(hp_b["n_components"]))
+        return a < b
+    if ma == "rf":
+        return int(hp_a["n_estimators"]) < int(hp_b["n_estimators"])
+    if ma == "acfnn":
+        ha = hp_a.get("hidden_layer_sizes", (128, 64))
+        hb = hp_b.get("hidden_layer_sizes", (128, 64))
+        return (sum(ha), len(ha)) < (sum(hb), len(hb))
+    return False
+
 
 # ====================== iPLS inner interval search (grouped) ======================
 
@@ -93,11 +138,12 @@ def _best_interval_grouped(
     reps: int, n_splits: int = 3, random_state: int = 42
 ):
     """
-    Choose best contiguous interval via GroupKFold on the outer-train ONLY.
+    Choose best contiguous interval via GroupKFold on the (train-only) data.
     Returns (best_interval (a,b), best_mse).
     """
     intervals = _make_intervals(X_tr.shape[1], num_intervals)
-    inner = GroupKFold(n_splits=min(n_splits, len(np.unique(groups_tr))))
+    n_splits = max(2, min(n_splits, int(len(np.unique(groups_tr)))))
+    inner = GroupKFold(n_splits=n_splits)
     interval_mse = []
 
     def _fit_transform_local(X_train, X_apply, methods):
@@ -147,24 +193,22 @@ def _best_interval_grouped(
 
 @dataclass
 class GlobalGroupedCV:
-    all_spectra: np.ndarray  # (1731, 9N)
+    all_spectra: np.ndarray  # (features, 9N) in your loaders; transposed to (9N, features) here
     meta: pd.DataFrame       # N rows (samples)
     reps: int = 9
 
     def _build_xy(self, target_cols: List[str], include_types=("DM1", "Control")):
         meta0 = self.meta[self.meta["Type"].isin(include_types)].copy().reset_index(drop=True)
-        # Default values for Controls (if applicable to your study design)
+        # Study-specific defaulting for controls:
         meta0.loc[meta0["Type"] == "Control", "target_SI"]  = 0
         meta0.loc[meta0["Type"] == "Control", "HGS_pp_avg"] = 100
         meta0.loc[meta0["Type"] == "Control", "ADF_pp_avg"] = 100
 
-        # Drop rows missing the requested target(s)—per target run will pass a single col.
         meta0 = meta0.dropna(subset=list(target_cols)).reset_index(drop=True)
-
         N = len(meta0)
-        # keep all 9 spectra per remaining sample, preserving order
+
         keep_cols = np.concatenate([np.arange(i*self.reps, (i+1)*self.reps) for i in range(N)], dtype=int)
-        X_all = self.all_spectra[:, keep_cols].T  # (9N, 1731)
+        X_all = self.all_spectra[:, keep_cols].T  # (9N, features)
 
         Y_s = meta0[list(target_cols)].to_numpy(dtype=float)  # (N, K)
         Y   = np.repeat(Y_s, self.reps, axis=0)               # (9N, K)
@@ -173,6 +217,7 @@ class GlobalGroupedCV:
         return X_all, Y, Y_s, groups, meta0
 
     def _fit_transform(self, X_train: np.ndarray, X_apply: np.ndarray, methods: list):
+        """Train-only preprocessing, apply to validation/test (no leakage)."""
         Xtr = X_train.T.copy()
         Xap = X_apply.T.copy()
         for m in (methods or []):
@@ -203,26 +248,7 @@ if __name__ == "__main__":
     from data_loader import load_data
     from plot_parity import parity_plot_sample_level, save_outer_predictions_excel
     import random as _random
-
-    # ---------- helpers for model simplicity ordering ----------
-    def _is_simpler(model_a, hp_a, model_b, hp_b):
-        order = {"pls": 0, "ipls": 1, "rf": 2, "acfnn": 3}
-        ma, mb = model_a.lower(), model_b.lower()
-        if ma != mb:
-            return order.get(ma, 99) < order.get(mb, 99)
-        if ma == "pls":
-            return int(hp_a["n_components"]) < int(hp_b["n_components"])
-        if ma == "ipls":
-            a = (int(hp_a["num_intervals"]), int(hp_a["n_components"]))
-            b = (int(hp_b["num_intervals"]), int(hp_b["n_components"]))
-            return a < b
-        if ma == "rf":
-            return int(hp_a["n_estimators"]) < int(hp_b["n_estimators"])
-        if ma == "acfnn":
-            ha = hp_a.get("hidden_layer_sizes", (128, 64))
-            hb = hp_b.get("hidden_layer_sizes", (128, 64))
-            return (sum(ha), len(ha)) < (sum(hb), len(hb))
-        return False
+    from collections import Counter
 
     # ---------- parse CLI ----------
     ap = argparse.ArgumentParser()
@@ -293,34 +319,27 @@ if __name__ == "__main__":
     # ---------- core ----------
     rm = GlobalGroupedCV(all_spectra=all_spectra, meta=meta, reps=9)
 
-    def nested_eval_one_combo(model_name, methods, hp_dict, target_col, n_outer=10, n_inner=5, seed=42):
+    def _select_and_eval(model_name: str, methods: List[str], hp_candidates: List[Any],
+                         target_col: str, n_outer=10, n_inner=5, seed=42):
         """
-        Nested CV with GroupKFold (groups = sample ids)
-        Returns dict with outer-fold sample-level preds/SDs, metrics, and inner selection trace.
+        Runs nested GroupKFold once for (model, methods) on the given target.
+        Inner CV: choose HP per outer fold via 1-SE toward simplicity.
+        Outer test: fit once on outer-train with chosen HP and predict outer-test.
+        Returns predictions at sample level, selection trace, summary HP stats, and metrics.
         """
         X, Y, Y_s, groups, meta_kept = rm._build_xy([target_col], include_types=INCLUDE_TYPES)
         N = len(meta_kept)
+        if N < 4:
+            raise ValueError(f"Too few samples after filtering for target={target_col} (N={N}).")
 
-        # sample ids 0..N-1 are the groups; expand to spectra level via masks when slicing
         sample_ids = np.arange(N)
-        # outer GroupKFold on samples (no shuffle)
-        gkf_outer = GroupKFold(n_splits=min(n_outer, N))
+        n_outer_eff = max(2, min(n_outer, int(len(sample_ids))))
+        gkf_outer = GroupKFold(n_splits=n_outer_eff)
 
         y_true_all, y_pred_all = [], []
         y_true_std_all, y_pred_std_all = [], []
         inner_trace = []
-
-        # candidate HP lists per model
-        if model_name == "pls":
-            hp_candidates = [{"n_components": int(c)} for c in PLS_COMPONENTS]
-        elif model_name == "ipls":
-            hp_candidates = [{"n_components": int(c), "num_intervals": int(I)} for c in IPLS_COMPONENTS for I in IPLS_INTERVALS]
-        elif model_name == "rf":
-            hp_candidates = RF_GRID
-        elif model_name == "acfnn":
-            hp_candidates = ACFNN_GRID
-        else:
-            raise ValueError(model_name)
+        chosen_hp_tags = []
 
         fold_idx = 0
         for tr_s_idx, te_s_idx in gkf_outer.split(sample_ids, groups=sample_ids):
@@ -328,33 +347,31 @@ if __name__ == "__main__":
             tr_s = sample_ids[tr_s_idx]
             te_s = sample_ids[te_s_idx]
 
-            # boolean masks at spectra level (9 per sample)
             mask_tr = np.isin(np.repeat(sample_ids, rm.reps), tr_s)
             mask_te = np.isin(np.repeat(sample_ids, rm.reps), te_s)
 
             Xtr, Xte = X[mask_tr], X[mask_te]
             Ytr, Yte = Y[mask_tr], Y[mask_te]
-            groups_tr = groups[mask_tr]  # spectra-level groups aligned to sample ids
+            groups_tr = groups[mask_tr]
 
-            # ----- inner GroupKFold to select HP on outer-train -----
-            gkf_inner = GroupKFold(n_splits=min(n_inner, len(np.unique(groups_tr))))
+            # inner grouped CV for HP selection
+            n_inner_eff = max(2, min(n_inner, int(len(np.unique(groups_tr)))))
+            gkf_inner = GroupKFold(n_splits=n_inner_eff)
 
             def score_hp(hp):
-                mse_folds = []
+                mse_list = []
                 for itr, iva in gkf_inner.split(Xtr, groups=groups_tr):
                     Xitr, Xiva = Xtr[itr], Xtr[iva]
                     Yitr, Yiva = Ytr[itr], Ytr[iva]
                     groups_itr = groups_tr[itr]
 
                     if model_name == "ipls":
-                        # interval selection uses groups within the inner-train only
                         (a, b), _ = _best_interval_grouped(
                             X_tr=Xitr, Y_tr=Yitr, groups_tr=groups_itr,
                             preprocess_methods=methods,
                             n_components=int(hp["n_components"]),
                             num_intervals=int(hp["num_intervals"]),
-                            reps=rm.reps,
-                            n_splits=max(3, min(5, int(len(np.unique(groups_itr))))),
+                            reps=rm.reps, n_splits=min(5, n_inner_eff)
                         )
                         Xt_tr, Xt_va = rm._fit_transform(Xitr[:, a:b], Xiva[:, a:b], methods)
                         mdl = PLSRegression(n_components=int(hp["n_components"]))
@@ -371,11 +388,13 @@ if __name__ == "__main__":
                         elif model_name == "acfnn":
                             mlp = ACFNNRegressor(random_state=seed, **hp)
                             mlp.fit(Xt_tr, Yitr.ravel()); Yhat = mlp.predict(Xt_va).reshape(-1, 1)
+                        else:
+                            raise ValueError(model_name)
 
                     m_true, _ = _sample_means_stds(Yiva, reps=rm.reps)
                     m_pred, _ = _sample_means_stds(Yhat, reps=rm.reps)
-                    mse_folds.append(mean_squared_error(m_true, m_pred))
-                return float(np.mean(mse_folds)), float(np.std(mse_folds))
+                    mse_list.append(mean_squared_error(m_true, m_pred))
+                return float(np.mean(mse_list)), float(np.std(mse_list))
 
             hp_stats = [score_hp(hp) for hp in hp_candidates]   # [(mu, sd), ...]
             mus = [m for (m, s) in hp_stats]
@@ -389,25 +408,29 @@ if __name__ == "__main__":
                     if _is_simpler(model_name, h, model_name, pick):
                         pick = h
 
-            inner_trace.append({
+            chosen_hp_tags.append(_hp_tag(model_name, pick))
+            trace_row = {
                 "outer_fold": fold_idx,
-                "selected_hp": pick,
+                "selected_hp": json.dumps(pick),
+                "selected_hp_tag": _hp_tag(model_name, pick),
                 "mu_best": float(mu_best),
                 "sd_best": float(sd_best),
-            })
+                "n_inner": int(n_inner_eff),
+            }
 
-            # ----- fit once on outer-train with chosen HP; predict outer-test -----
+            # Fit on full outer-train with chosen HP; for iPLS reselect interval on full outer-train
             if model_name == "ipls":
-                (a, b), _ = _best_interval_grouped(
+                (a_eval, b_eval), _ = _best_interval_grouped(
                     X_tr=Xtr, Y_tr=Ytr, groups_tr=groups_tr,
                     preprocess_methods=methods,
                     n_components=int(pick["n_components"]), num_intervals=int(pick["num_intervals"]),
-                    reps=rm.reps, n_splits=max(3, min(5, int(len(np.unique(groups_tr))))),
+                    reps=rm.reps, n_splits=min(5, n_inner_eff)
                 )
-                Xt_tr, Xt_te = rm._fit_transform(Xtr[:, a:b], Xte[:, a:b], methods)
+                Xt_tr, Xt_te = rm._fit_transform(Xtr[:, a_eval:b_eval], Xte[:, a_eval:b_eval], methods)
                 mdl = PLSRegression(n_components=int(pick["n_components"]))
                 mdl.fit(Xt_tr, Ytr)
                 Yhat = mdl.predict(Xt_te)
+                trace_row.update({"interval_a": int(a_eval), "interval_b": int(b_eval)})
             else:
                 Xt_tr, Xt_te = rm._fit_transform(Xtr, Xte, methods)
                 if model_name == "pls":
@@ -420,22 +443,32 @@ if __name__ == "__main__":
                     mlp = ACFNNRegressor(random_state=seed, **pick)
                     mlp.fit(Xt_tr, Ytr.ravel()); Yhat = mlp.predict(Xt_te).reshape(-1, 1)
 
+            inner_trace.append(trace_row)
+
             m_true, s_true = _sample_means_stds(Yte, reps=rm.reps)
             m_pred, s_pred = _sample_means_stds(Yhat, reps=rm.reps)
             y_true_all.append(m_true);    y_pred_all.append(m_pred)
             y_true_std_all.append(s_true); y_pred_std_all.append(s_pred)
 
+        # Concatenate across outer folds
         YT = np.concatenate(y_true_all).reshape(-1, 1)
         YP = np.concatenate(y_pred_all).reshape(-1, 1)
         ST = np.concatenate(y_true_std_all).reshape(-1, 1)
         SP = np.concatenate(y_pred_std_all).reshape(-1, 1)
-        mets = _metrics(YT, YP)
+
+        # Modal HP tag (for reporting)
+        modal_hp_tag = None
+        if chosen_hp_tags:
+            cnt = Counter(chosen_hp_tags)
+            modal_hp_tag = cnt.most_common(1)[0][0]
 
         return {
             "y_true": YT, "y_pred": YP,
             "y_true_std": ST, "y_pred_std": SP,
-            **mets,
-            "inner_trace": inner_trace
+            "metrics": _metrics(YT, YP),
+            "inner_trace": inner_trace,
+            "modal_hp_tag": modal_hp_tag,
+            "n_outer": int(n_outer_eff)
         }
 
     # ---------- per-target run & outputs ----------
@@ -446,88 +479,126 @@ if __name__ == "__main__":
         os.makedirs(pred_root, exist_ok=True)
 
         rows = []
-        best = None  # {"rmse":..., "model":..., "methods":[...], "hp_dict":..., "hp_tag":..., "res":...}
+        best = None  # {"rmse":..., "model":..., "methods":[...], "res":..., "hp_note":...}
 
-        # iterate preprocessing chains
         for methods in PREPROCESS_GRID:
             mlabel = " + ".join(methods) if methods else "No Preprocessing"
             mpath  = _safe_methods_path(methods)
 
-            # ---- PLS ----
+            # ---- PLS (grid tuned inside) ----
             if RUN_PLS:
                 model = "pls"
                 model_dir = os.path.join(pred_root, f"{model}__{mpath}"); os.makedirs(model_dir, exist_ok=True)
-                for nc in PLS_COMPONENTS:
-                    hp = {"n_components": int(nc)}
-                    res = nested_eval_one_combo(model, methods, hp, tcol, n_outer=args.outer_folds, n_inner=args.inner_folds, seed=args.random_state)
-                    hp_tag = f"C={nc}"
-                    pd.DataFrame({f"{tcol}__true": res["y_true"].ravel(), f"{tcol}__pred": res["y_pred"].ravel()}).to_excel(
-                        os.path.join(model_dir, f"{hp_tag}.xlsx"), index=False
-                    )
-                    rows.append({"target": tcol, "model": model, "preprocessing": mlabel, "hp": hp_tag,
-                                 "rmse": res["rmse"], "r2": res["r2"], "mae": res["mae"], "medae": res["medae"], "evs": res["evs"]})
-                    if (best is None) or (res["rmse"] < best["rmse"] - 1e-12) or \
-                       (res["rmse"] <= best["rmse"] + 1e-12 and _is_simpler(model, hp, best["model"], best["hp_dict"])):
-                        best = {"rmse": res["rmse"], "model": model, "methods": methods, "hp_dict": hp, "hp_tag": hp_tag, "res": res}
+                hp_candidates = [{"n_components": int(c)} for c in PLS_COMPONENTS]
+                res = _select_and_eval(model, methods, hp_candidates, tcol,
+                                       n_outer=args.outer_folds, n_inner=args.inner_folds, seed=args.random_state)
+
+                # save predictions
+                pd.DataFrame({f"{tcol}__true": res["y_true"].ravel(),
+                              f"{tcol}__pred": res["y_pred"].ravel()}).to_excel(
+                    os.path.join(model_dir, "selected.xlsx"), index=False
+                )
+                # save trace
+                pd.DataFrame(res["inner_trace"]).to_csv(os.path.join(model_dir, "selection_trace.csv"), index=False)
+
+                rows.append({
+                    "target": tcol, "model": model, "preprocessing": mlabel,
+                    "hp": "selected (nested)", "hp_modal_tag": res["modal_hp_tag"] or "",
+                    "rmse": res["metrics"]["rmse"], "r2": res["metrics"]["r2"],
+                    "mae": res["metrics"]["mae"], "medae": res["metrics"]["medae"], "evs": res["metrics"]["evs"],
+                    "cv_method": "Nested GroupKFold", "n_outer": res["n_outer"], "n_inner": args.inner_folds,
+                    "random_state": args.random_state
+                })
+                if (best is None) or (res["metrics"]["rmse"] < best["rmse"] - 1e-12) or \
+                   (abs(res["metrics"]["rmse"] - best["rmse"]) <= 1e-12 and _is_simpler(model, {"n_components": 1}, best["model"], {"n_components": 9999})):
+                    best = {"rmse": res["metrics"]["rmse"], "model": model, "methods": methods, "res": res, "hp_note": res["modal_hp_tag"]}
 
             # ---- RF ----
             if RUN_RF:
                 model = "rf"
                 model_dir = os.path.join(pred_root, f"{model}__{mpath}"); os.makedirs(model_dir, exist_ok=True)
-                for hp in RF_GRID:
-                    res = nested_eval_one_combo(model, methods, hp, tcol, n_outer=args.outer_folds, n_inner=args.inner_folds, seed=args.random_state)
-                    hp_tag = _rf_tag(hp)
-                    pd.DataFrame({f"{tcol}__true": res["y_true"].ravel(), f"{tcol}__pred": res["y_pred"].ravel()}).to_excel(
-                        os.path.join(model_dir, f"{hp_tag}.xlsx"), index=False
-                    )
-                    rows.append({"target": tcol, "model": model, "preprocessing": mlabel, "hp": hp_tag,
-                                 "rmse": res["rmse"], "r2": res["r2"], "mae": res["mae"], "medae": res["medae"], "evs": res["evs"]})
-                    if (best is None) or (res["rmse"] < best["rmse"] - 1e-12) or \
-                       (res["rmse"] <= best["rmse"] + 1e-12 and _is_simpler(model, hp, best["model"], best["hp_dict"])):
-                        best = {"rmse": res["rmse"], "model": model, "methods": methods, "hp_dict": hp, "hp_tag": hp_tag, "res": res}
+                res = _select_and_eval(model, methods, RF_GRID, tcol,
+                                       n_outer=args.outer_folds, n_inner=args.inner_folds, seed=args.random_state)
+                pd.DataFrame({f"{tcol}__true": res["y_true"].ravel(),
+                              f"{tcol}__pred": res["y_pred"].ravel()}).to_excel(
+                    os.path.join(model_dir, "selected.xlsx"), index=False
+                )
+                pd.DataFrame(res["inner_trace"]).to_csv(os.path.join(model_dir, "selection_trace.csv"), index=False)
+
+                rows.append({
+                    "target": tcol, "model": model, "preprocessing": mlabel,
+                    "hp": "selected (nested)", "hp_modal_tag": res["modal_hp_tag"] or "",
+                    "rmse": res["metrics"]["rmse"], "r2": res["metrics"]["r2"],
+                    "mae": res["metrics"]["mae"], "medae": res["metrics"]["medae"], "evs": res["metrics"]["evs"],
+                    "cv_method": "Nested GroupKFold", "n_outer": res["n_outer"], "n_inner": args.inner_folds,
+                    "random_state": args.random_state
+                })
+                if (best is None) or (res["metrics"]["rmse"] < best["rmse"] - 1e-12) or \
+                   (abs(res["metrics"]["rmse"] - best["rmse"]) <= 1e-12 and _is_simpler(model, {"n_estimators": 1}, best["model"], {"n_estimators": 10**9})):
+                    best = {"rmse": res["metrics"]["rmse"], "model": model, "methods": methods, "res": res, "hp_note": res["modal_hp_tag"]}
 
             # ---- AC-FNN ----
             if RUN_ACFNN:
                 model = "acfnn"
                 model_dir = os.path.join(pred_root, f"{model}__{mpath}"); os.makedirs(model_dir, exist_ok=True)
-                for hp in ACFNN_GRID:
-                    res = nested_eval_one_combo(model, methods, hp, tcol, n_outer=args.outer_folds, n_inner=args.inner_folds, seed=args.random_state)
-                    hp_tag = _ac_tag(hp)
-                    pd.DataFrame({f"{tcol}__true": res["y_true"].ravel(), f"{tcol}__pred": res["y_pred"].ravel()}).to_excel(
-                        os.path.join(model_dir, f"{hp_tag}.xlsx"), index=False
-                    )
-                    rows.append({"target": tcol, "model": model, "preprocessing": mlabel, "hp": hp_tag,
-                                 "rmse": res["rmse"], "r2": res["r2"], "mae": res["mae"], "medae": res["medae"], "evs": res["evs"]})
-                    if (best is None) or (res["rmse"] < best["rmse"] - 1e-12) or \
-                       (res["rmse"] <= best["rmse"] + 1e-12 and _is_simpler(model, hp, best["model"], best["hp_dict"])):
-                        best = {"rmse": res["rmse"], "model": model, "methods": methods, "hp_dict": hp, "hp_tag": hp_tag, "res": res}
+                res = _select_and_eval(model, methods, ACFNN_GRID, tcol,
+                                       n_outer=args.outer_folds, n_inner=args.inner_folds, seed=args.random_state)
+                pd.DataFrame({f"{tcol}__true": res["y_true"].ravel(),
+                              f"{tcol}__pred": res["y_pred"].ravel()}).to_excel(
+                    os.path.join(model_dir, "selected.xlsx"), index=False
+                )
+                pd.DataFrame(res["inner_trace"]).to_csv(os.path.join(model_dir, "selection_trace.csv"), index=False)
+
+                rows.append({
+                    "target": tcol, "model": model, "preprocessing": mlabel,
+                    "hp": "selected (nested)", "hp_modal_tag": res["modal_hp_tag"] or "",
+                    "rmse": res["metrics"]["rmse"], "r2": res["metrics"]["r2"],
+                    "mae": res["metrics"]["mae"], "medae": res["metrics"]["medae"], "evs": res["metrics"]["evs"],
+                    "cv_method": "Nested GroupKFold", "n_outer": res["n_outer"], "n_inner": args.inner_folds,
+                    "random_state": args.random_state
+                })
+                # Simplicity: AC-FNN is last in hierarchy; only wins on strictly better RMSE
+                if (best is None) or (res["metrics"]["rmse"] < best["rmse"] - 1e-12):
+                    best = {"rmse": res["metrics"]["rmse"], "model": model, "methods": methods, "res": res, "hp_note": res["modal_hp_tag"]}
 
             # ---- iPLS ----
             if RUN_IPLS:
                 model = "ipls"
                 model_dir = os.path.join(pred_root, f"{model}__{mpath}"); os.makedirs(model_dir, exist_ok=True)
-                for c in IPLS_COMPONENTS:
-                    for I in IPLS_INTERVALS:
-                        hp = {"n_components": int(c), "num_intervals": int(I)}
-                        res = nested_eval_one_combo(model, methods, hp, tcol, n_outer=args.outer_folds, n_inner=args.inner_folds, seed=args.random_state)
-                        hp_tag = f"C={c}__I={I}"
-                        pd.DataFrame({f"{tcol}__true": res["y_true"].ravel(), f"{tcol}__pred": res["y_pred"].ravel()}).to_excel(
-                            os.path.join(model_dir, f"{hp_tag}.xlsx"), index=False
-                        )
-                        rows.append({"target": tcol, "model": model, "preprocessing": mlabel, "hp": hp_tag,
-                                     "rmse": res["rmse"], "r2": res["r2"], "mae": res["mae"], "medae": res["medae"], "evs": res["evs"]})
-                        if (best is None) or (res["rmse"] < best["rmse"] - 1e-12) or \
-                           (res["rmse"] <= best["rmse"] + 1e-12 and _is_simpler(model, hp, best["model"], best["hp_dict"])):
-                            best = {"rmse": res["rmse"], "model": model, "methods": methods, "hp_dict": hp, "hp_tag": hp_tag, "res": res}
+                hp_candidates = [{"n_components": int(c), "num_intervals": int(I)} for c in IPLS_COMPONENTS for I in IPLS_INTERVALS]
+                res = _select_and_eval(model, methods, hp_candidates, tcol,
+                                       n_outer=args.outer_folds, n_inner=args.inner_folds, seed=args.random_state)
+                pd.DataFrame({f"{tcol}__true": res["y_true"].ravel(),
+                              f"{tcol}__pred": res["y_pred"].ravel()}).to_excel(
+                    os.path.join(model_dir, "selected.xlsx"), index=False
+                )
+                pd.DataFrame(res["inner_trace"]).to_csv(os.path.join(model_dir, "selection_trace.csv"), index=False)
+
+                rows.append({
+                    "target": tcol, "model": model, "preprocessing": mlabel,
+                    "hp": "selected (nested)", "hp_modal_tag": res["modal_hp_tag"] or "",
+                    "rmse": res["metrics"]["rmse"], "r2": res["metrics"]["r2"],
+                    "mae": res["metrics"]["mae"], "medae": res["metrics"]["medae"], "evs": res["metrics"]["evs"],
+                    "cv_method": "Nested GroupKFold", "n_outer": res["n_outer"], "n_inner": args.inner_folds,
+                    "random_state": args.random_state
+                })
+                if (best is None) or (res["metrics"]["rmse"] < best["rmse"] - 1e-12) or \
+                   (abs(res["metrics"]["rmse"] - best["rmse"]) <= 1e-12 and _is_simpler(model, {"n_components":1,"num_intervals":1},
+                                                                                        best["model"], {"n_components":9999,"num_intervals":9999})):
+                    best = {"rmse": res["metrics"]["rmse"], "model": model, "methods": methods, "res": res, "hp_note": res["modal_hp_tag"]}
 
         # consolidated metrics per target
         if rows:
-            metrics_df = pd.DataFrame(rows).sort_values(by=["rmse", "model", "preprocessing", "hp"]).reset_index(drop=True)
+            metrics_df = pd.DataFrame(rows).sort_values(by=["rmse", "model", "preprocessing"]).reset_index(drop=True)
         else:
-            metrics_df = pd.DataFrame(columns=["target", "model", "preprocessing", "hp", "rmse", "r2", "mae", "medae", "evs"])
+            metrics_df = pd.DataFrame(columns=[
+                "target", "model", "preprocessing", "hp", "hp_modal_tag",
+                "rmse", "r2", "mae", "medae", "evs",
+                "cv_method", "n_outer", "n_inner", "random_state"
+            ])
         metrics_path = os.path.join(tgt_root, f"{tcol}__metrics_all_combos_NESTED_CV.xlsx")
         metrics_df.to_excel(metrics_path, index=False)
-        print(f"[METRICS] wrote {metrics_path}  ({len(metrics_df)} combos)")
+        print(f"[METRICS] wrote {metrics_path}  ({len(metrics_df)} rows)")
 
         # winner artifacts
         if best is None:
@@ -548,10 +619,11 @@ if __name__ == "__main__":
             target_names=(nice,),
             out_dir=winner_dir,
             fname_prefix="parity_nestedcv",
-            title_suffix=f"{best['model'].upper()} | {methods_label} | HP: {best['hp_tag']}"
+            title_suffix=f"{best['model'].upper()} | {methods_label} | HP: selected (nested){' | modal='+str(best['hp_note']) if best['hp_note'] else ''}"
         )
 
         # tidy predictions for the winner (this target only)
+        from plot_parity import save_outer_predictions_excel  # already imported above; just for clarity
         save_outer_predictions_excel(
             y_true_sample=best["res"]["y_true"],
             y_pred_sample=best["res"]["y_pred"],
@@ -562,4 +634,4 @@ if __name__ == "__main__":
             y_pred_sample_std=best["res"]["y_pred_std"],
         )
 
-        print(f"[BEST] {nice}: {best['model']} + {methods_label} [{best['hp_tag']}] — RMSE={best['rmse']:.4f}")
+        print(f"[BEST] {nice}: {best['model']} + {methods_label} — RMSE={best['rmse']:.4f} (selected via nested GroupKFold)")
