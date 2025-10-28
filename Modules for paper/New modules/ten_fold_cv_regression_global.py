@@ -396,7 +396,10 @@ if __name__ == "__main__":
                     mse_list.append(mean_squared_error(m_true, m_pred))
                 return float(np.mean(mse_list)), float(np.std(mse_list))
 
-            hp_stats = [score_hp(hp) for hp in hp_candidates]   # [(mu, sd), ...]
+            hp_stats = Parallel(n_jobs=-1, backend="loky")(
+                delayed(score_hp)(hp) for hp in hp_candidates
+            )
+
             mus = [m for (m, s) in hp_stats]
             best_ix = int(np.argmin(mus))
             mu_best, sd_best = hp_stats[best_ix]
