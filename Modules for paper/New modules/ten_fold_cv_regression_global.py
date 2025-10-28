@@ -369,7 +369,7 @@ if __name__ == "__main__":
     IPLS_COMPONENTS = list(range(2, 11))
     IPLS_INTERVALS  = [5, 10, 15]
 
-    def generate_random_rf_params(num_iterations=100, seed=42):
+    def generate_random_rf_params(num_iterations=20, seed=42):
         rng = _random.Random(seed)
         grid = []
         for _ in range(num_iterations):
@@ -382,7 +382,7 @@ if __name__ == "__main__":
             })
         return grid
 
-    RF_GRID = generate_random_rf_params(100, seed=args.random_state)
+    RF_GRID = generate_random_rf_params(20, seed=args.random_state)
     ACFNN_GRID = [
         {"hidden_layer_sizes": (256, 128),      "activation":"relu", "alpha":1e-4, "learning_rate_init":1e-3, "batch_size":64,  "max_iter":200},
         {"hidden_layer_sizes": (512, 256),      "activation":"relu", "alpha":1e-4, "learning_rate_init":5e-4, "batch_size":64,  "max_iter":300},
@@ -523,8 +523,10 @@ if __name__ == "__main__":
                     rf = RandomForestRegressor(**pick, random_state=seed, n_jobs=-1)
                     rf.fit(Xt_tr, Ytr.ravel()); Yhat = rf.predict(Xt_te).reshape(-1, 1)
                 elif model_name == "acfnn":
-                    mlp = ACFNNRegressor(random_state=seed, **pick)
-                    mlp.fit(Xt_tr, Ytr.ravel()); Yhat = mlp.predict(Xt_te).reshape(-1, 1)
+                    mlp = TorchRegressor(random_state=seed, **pick)
+                    mlp.fit(Xt_tr, Ytr.ravel())
+                    Yhat = mlp.predict(Xt_te).reshape(-1, 1)
+
 
             inner_trace.append(trace_row)
 
