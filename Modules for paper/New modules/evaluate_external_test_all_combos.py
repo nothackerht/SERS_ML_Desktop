@@ -94,6 +94,86 @@ def _ac_tag(hp: dict) -> str:
     return (f"hls{hls}_act{hp.get('activation','relu')}_bs{hp.get('batch_size','NA')}"
             f"_lr{hp.get('learning_rate_init','NA')}_wd{hp.get('alpha','0')}_mi{hp.get('max_iter','NA')}")
 
+class TorchRegressor:
+    """
+    Simple feedforward regressor with GPU support.
+    Expects a single target column.
+    API subset: .fit(X, y), .predict(X) returning shape (n,1)
+    """
+
+    def __init__(
+        self,
+        hidden_layer_sizes=(256, 128),
+        activation="relu",
+        learning_rate_init=1e-3,
+        alpha=1e-4,        # L2 weight decay
+        max_iter=200,
+        batch_size=64,
+        random_state=42,
+    ):
+        self.hidden_layer_sizes = hidden_layer_sizes
+        self.activation = activation
+        self.learning_rate_init = learning_rate_init
+        self.alpha = alpha
+        self.max_iter = max_iter
+        self.batch_size = batch_size
+        self.random_state = random_state
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model_ = None
+        self.input_dim_ = None
+
+    def _build_mlp(self, in_dim):
+        act_layer = nn.ReLU if self.activation == "relu" else nn.Tanh
+        layers = []
+        last = in_dim
+        for h in self.hidden_layer_sizes:
+            layers.append(nn.Linear(last, h))
+            layers.append(act_layer())
+            last = h
+        layers.append(nn.Linear(last, 1))
+        return nn.Sequential(*layers)
+
+    def fit(self, X, y):
+        rng = np.random.RandomState(self.random_state)
+        torch.manual_seed(self.random_state)
+
+        X = np.asarray(X, dtype=np.float32)
+        y = np.asarray(y, dtype=np.float32).reshape(-1, 1)
+
+        self.input_dim_ = X.shape[1]
+        self.model_ = self._build_mlp(self.input_dim_).to(self.device)
+
+        optimizer = optim.Adam(
+            self.model_.parameters(),
+            lr=self.learning_rate_init,
+            weight_decay=self.alpha,
+        )
+        loss_fn = nn.MSELoss()
+
+        n = X.shape[0]
+        idx_all = np.arange(n)
+
+        for epoch in range(self.max_iter):
+            rng.shuffle(idx_all)
+            for start in range(0, n, self.batch_size):
+                batch_idx = idx_all[start:start+self.batch_size]
+                xb = torch.from_numpy(X[batch_idx]).to(self.device)
+                yb = torch.from_numpy(y[batch_idx]).to(self.device)
+
+                optimizer.zero_grad()
+                pred = self.model_(xb)
+                loss = loss_fn(pred, yb)
+                loss.backward()
+                optimizer.step()
+
+        return self
+
+    def predict(self, X):
+        X = np.asarray(X, dtype=np.float32)
+        xb = torch.from_numpy(X).to(self.device)
+        with torch.no_grad():
+            pred = self.model_(xb).cpu().numpy()
+        return pred  # shape (n,1)
 
 # ====================== iPLS interval helpers (grouped) ======================
 
@@ -247,7 +327,7 @@ if __name__ == "__main__":
     IPLS_COMPONENTS = list(range(2, 11))
     IPLS_INTERVALS  = [5, 10, 15]
 
-    def generate_random_rf_params(num_iterations=100, seed=42):
+    def generate_random_rf_params(num_iterations=20, seed=42):
         rng = _random.Random(seed)
         grid = []
         for _ in range(num_iterations):
@@ -259,8 +339,9 @@ if __name__ == "__main__":
                 "min_samples_leaf":  rng.choice([1, 10, 30, 40, 47, 48, 50, 55, 60]),
             })
         return grid
+    
+    RF_GRID = generate_random_rf_params(20, seed=args.random_state)
 
-    RF_GRID = generate_random_rf_params(100, seed=args.random_state)
     ACFNN_GRID = [
         {"hidden_layer_sizes": (256, 128),      "activation":"relu", "alpha":1e-4, "learning_rate_init":1e-3, "batch_size":64,  "max_iter":200},
         {"hidden_layer_sizes": (512, 256),      "activation":"relu", "alpha":1e-4, "learning_rate_init":5e-4, "batch_size":64,  "max_iter":300},
@@ -360,15 +441,20 @@ if __name__ == "__main__":
                             rf = RandomForestRegressor(**hp, random_state=seed, n_jobs=-1)
                             rf.fit(Xt_tr, Yitr.ravel()); Yhat = rf.predict(Xt_va).reshape(-1, 1)
                         elif model_name == "acfnn":
-                            mlp = ACFNNRegressor(random_state=seed, **hp)
-                            mlp.fit(Xt_tr, Yitr.ravel()); Yhat = mlp.predict(Xt_va).reshape(-1, 1)
+                            mlp = TorchRegressor(random_state=seed, **hp)
+                            mlp.fit(Xt_tr, Yitr.ravel())
+                            Yhat = mlp.predict(Xt_va).reshape(-1, 1)
+
 
                     m_true = _sample_means_stds(Yiva, reps=rm_tr.reps)[0]
                     m_pred = _sample_means_stds(Yhat, reps=rm_tr.reps)[0]
                     mse_folds.append(mean_squared_error(m_true, m_pred))
                 return float(np.mean(mse_folds)), float(np.std(mse_folds))
+            
+            hp_stats = Parallel(n_jobs=-1, backend="loky")(
+                delayed(score_hp)(hp) for hp in hp_candidates
+            )
 
-            hp_stats = [score_hp(hp) for hp in hp_candidates]
             mus = [m for (m, s) in hp_stats]
             best_ix = int(np.argmin(mus))
             mu_best, sd_best = hp_stats[best_ix]
@@ -408,8 +494,10 @@ if __name__ == "__main__":
                     rf = RandomForestRegressor(**pick, random_state=seed, n_jobs=-1)
                     rf.fit(Xt_tr, Ytr.ravel()); Yhat = rf.predict(Xt_te).reshape(-1, 1)
                 elif model_name == "acfnn":
-                    mlp = ACFNNRegressor(random_state=seed, **pick)
-                    mlp.fit(Xt_tr, Ytr.ravel()); Yhat = mlp.predict(Xt_te).reshape(-1, 1)
+                    mlp = TorchRegressor(random_state=seed, **pick)
+                    mlp.fit(Xt_tr, Ytr.ravel())
+                    Yhat = mlp.predict(Xt_te).reshape(-1, 1)
+
 
             m_true = _sample_means_stds(Yte, reps=rm_tr.reps)[0]
             m_pred = _sample_means_stds(Yhat, reps=rm_tr.reps)[0]
@@ -498,9 +586,11 @@ if __name__ == "__main__":
                         rf.fit(Xt_tr, Ytr_all.ravel()); yhat_ext_spec = rf.predict(Xt_te)
                         hp_tag = _rf_tag(hp)
                     elif model == "acfnn":
-                        mlp = ACFNNRegressor(random_state=args.random_state, **hp)
-                        mlp.fit(Xt_tr, Ytr_all.ravel()); yhat_ext_spec = mlp.predict(Xt_te)
+                        mlp = TorchRegressor(random_state=args.random_state, **hp)
+                        mlp.fit(Xt_tr, Ytr_all.ravel())
+                        yhat_ext_spec = mlp.predict(Xt_te)
                         hp_tag = _ac_tag(hp)
+
 
                 # Collapse predictions to sample level and compute EXTERNAL metrics
                 y_pred_s, y_pred_std = _sample_means_stds(yhat_ext_spec, reps=REPS)
