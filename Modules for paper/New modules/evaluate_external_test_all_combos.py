@@ -32,11 +32,15 @@ import re
 import json
 import numpy as np
 import pandas as pd
-
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from joblib import Parallel, delayed
 from sklearn.model_selection import GroupKFold
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.neural_network import MLPRegressor as ACFNNRegressor
+
 from sklearn.metrics import (
     mean_squared_error, r2_score,
     mean_absolute_error, median_absolute_error, explained_variance_score,
