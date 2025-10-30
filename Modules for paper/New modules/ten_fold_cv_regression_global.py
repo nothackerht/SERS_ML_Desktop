@@ -405,14 +405,29 @@ if __name__ == "__main__":
         Outer test: fit once on outer-train with chosen HP and predict outer-test.
         Returns predictions at sample level, selection trace, summary HP stats, and metrics.
         """
-        X, Y, Y_s, groups, meta_kept = rm._build_xy([target_col], include_types=INCLUDE_TYPES)
+        X, Y, Y_s, _, meta_kept = rm._build_xy([target_col], include_types=INCLUDE_TYPES)
+
         N = len(meta_kept)
         if N < 4:
             raise ValueError(f"Too few samples after filtering for target={target_col} (N={N}).")
 
-        sample_ids = np.arange(N)
+        # ----- build sample-level ids and labels for outer split -----
+        sample_ids = np.arange(N)                                  # (N,)
+        spec_groups = np.repeat(sample_ids, rm.reps)               # (9N,) group label per spectrum (0..N-1)
+        y_strat = (meta_kept["Type"] == "Control").astype(int).to_numpy()  # (N,) 0=DM1, 1=Control
+
         n_outer_eff = max(2, min(n_outer, int(len(sample_ids))))
-        gkf_outer = GroupKFold(n_splits=n_outer_eff)
+        try:
+            from sklearn.model_selection import StratifiedGroupKFold
+            outer_cv = StratifiedGroupKFold(n_splits=n_outer_eff, shuffle=True, random_state=seed)
+            outer_splits = outer_cv.split(sample_ids, y_strat, groups=sample_ids)
+        except ImportError:
+            # Fallback: grouped CV with shuffled sample order (not stratified)
+            rng = np.random.default_rng(seed)
+            shuffled = rng.permutation(sample_ids)
+            from sklearn.model_selection import GroupKFold
+            outer_cv = GroupKFold(n_splits=n_outer_eff)
+            outer_splits = outer_cv.split(shuffled, groups=shuffled)
 
         y_true_all, y_pred_all = [], []
         y_true_std_all, y_pred_std_all = [], []
@@ -420,17 +435,43 @@ if __name__ == "__main__":
         chosen_hp_tags = []
 
         fold_idx = 0
-        for tr_s_idx, te_s_idx in gkf_outer.split(sample_ids, groups=sample_ids):
-            fold_idx += 1
-            tr_s = sample_ids[tr_s_idx]
-            te_s = sample_ids[te_s_idx]
+        # --- sanity check: class balance & grouping ---
+        meta_types = meta_kept["Type"].to_numpy()
+        print(f"[CHECK] N samples for this target: {len(sample_ids)}; Controls={np.sum(y_strat==1)}, DM1={np.sum(y_strat==0)}")
+        
+        tmp_splits = list(outer_splits)  # materialize generator once
+        for i, (tr_idx, te_idx) in enumerate(tmp_splits, 1):
+            n_tr_ctl = int(np.sum(y_strat[tr_idx] == 1))
+            n_tr_dm1 = int(np.sum(y_strat[tr_idx] == 0))
+            n_te_ctl = int(np.sum(y_strat[te_idx] == 1))
+            n_te_dm1 = int(np.sum(y_strat[te_idx] == 0))
+        
+            # verify replicate integrity (each sample contributes exactly rm.reps spectra)
+            tr_s = sample_ids[tr_idx]
+            te_s = sample_ids[te_idx]
+            spec_groups = np.repeat(sample_ids, rm.reps)
+            n_tr_specs = int(np.sum(np.isin(spec_groups, tr_s)))
+            n_te_specs = int(np.sum(np.isin(spec_groups, te_s)))
+        
+            print(f"[FOLD {i:02d}] Train: DM1={n_tr_dm1}, Ctrl={n_tr_ctl} | Test: DM1={n_te_dm1}, Ctrl={n_te_ctl} "
+                  f"| specs/train={n_tr_specs}, specs/test={n_te_specs} (should be multiples of {rm.reps})")
+        
+        # reuse the realized list for the main loop:
+        outer_splits = tmp_splits
 
-            mask_tr = np.isin(np.repeat(sample_ids, rm.reps), tr_s)
-            mask_te = np.isin(np.repeat(sample_ids, rm.reps), te_s)
+        for tr_s_idx, te_s_idx in outer_splits:
+            fold_idx += 1
+            tr_s = sample_ids[tr_s_idx]   # sample ids in train fold
+            te_s = sample_ids[te_s_idx]   # sample ids in test  fold
+
+            # ---- map sample-level split to spectrum-level masks (keeps all 9 spectra together) ----
+            mask_tr = np.isin(spec_groups, tr_s)   # (9N,) True for spectra belonging to train samples
+            mask_te = np.isin(spec_groups, te_s)   # (9N,) True for spectra belonging to test  samples
 
             Xtr, Xte = X[mask_tr], X[mask_te]
             Ytr, Yte = Y[mask_tr], Y[mask_te]
-            groups_tr = groups[mask_tr]
+            groups_tr = spec_groups[mask_tr]       # (9N_tr,) replicate-aware group labels for inner CV
+
 
             # inner grouped CV for HP selection
             n_inner_eff = max(2, min(n_inner, int(len(np.unique(groups_tr)))))
