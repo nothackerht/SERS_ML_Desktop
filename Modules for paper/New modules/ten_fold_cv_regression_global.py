@@ -350,6 +350,14 @@ if __name__ == "__main__":
         return_filenames=False,
         strict=False,
         report_samples=5,
+     
+
+    )
+    wavenumbers = np.asarray(wavenumbers).ravel()
+    assert wavenumbers.ndim == 1, "wavenumbers must be 1D"
+    assert wavenumbers.size == all_spectra.shape[0], (
+        f"Expected len(wavenumbers)=={all_spectra.shape[0]} (feature count), "
+        f"got {wavenumbers.size}"
     )
 
     # ---------- config (matches your old main grids) ----------
@@ -398,7 +406,8 @@ if __name__ == "__main__":
     rm = GlobalGroupedCV(all_spectra=all_spectra, meta=meta, reps=9)
 
     def _select_and_eval(model_name: str, methods: List[str], hp_candidates: List[Any],
-                         target_col: str, n_outer=10, n_inner=5, seed=42):
+                             target_col: str, wavenumbers: np.ndarray, n_outer=10, n_inner=5, seed=42):
+
         """
         Runs nested GroupKFold once for (model, methods) on the given target.
         Inner CV: choose HP per outer fold via 1-SE toward simplicity.
@@ -540,7 +549,13 @@ if __name__ == "__main__":
                 "mu_best": float(mu_best),
                 "sd_best": float(sd_best),
                 "n_inner": int(n_inner_eff),
+                # defaults (non-iPLS models will keep NaNs)
+                "interval_a": np.nan,
+                "interval_b": np.nan,
+                "interval_start_cm-1": np.nan,
+                "interval_end_cm-1": np.nan,
             }
+
 
             # Fit on full outer-train with chosen HP; for iPLS reselect interval on full outer-train
             if model_name == "ipls":
@@ -554,7 +569,21 @@ if __name__ == "__main__":
                 mdl = PLSRegression(n_components=int(pick["n_components"]))
                 mdl.fit(Xt_tr, Ytr)
                 Yhat = mdl.predict(Xt_te)
-                trace_row.update({"interval_a": int(a_eval), "interval_b": int(b_eval)})
+                # map selected interval (a_eval:b_eval) to wavenumbers
+                if wavenumbers is not None and len(wavenumbers) == Xtr.shape[1]:
+                    start_wn = float(wavenumbers[a_eval])
+                    end_wn   = float(wavenumbers[b_eval - 1])
+                else:
+                    start_wn = np.nan
+                    end_wn   = np.nan
+
+                trace_row.update({
+                    "interval_a": int(a_eval),
+                    "interval_b": int(b_eval),
+                    "interval_start_cm-1": start_wn,
+                    "interval_end_cm-1": end_wn,
+                })
+
             else:
                 Xt_tr, Xt_te = rm._fit_transform(Xtr, Xte, methods)
                 if model_name == "pls":
@@ -616,8 +645,10 @@ if __name__ == "__main__":
                 model = "pls"
                 model_dir = os.path.join(pred_root, f"{model}__{mpath}"); os.makedirs(model_dir, exist_ok=True)
                 hp_candidates = [{"n_components": int(c)} for c in PLS_COMPONENTS]
-                res = _select_and_eval(model, methods, hp_candidates, tcol,
+                res = _select_and_eval(model, methods, hp_candidates, tcol, wavenumbers,
                                        n_outer=args.outer_folds, n_inner=args.inner_folds, seed=args.random_state)
+
+
 
                 # save predictions
                 pd.DataFrame({f"{tcol}__true": res["y_true"].ravel(),
@@ -643,8 +674,11 @@ if __name__ == "__main__":
             if RUN_RF:
                 model = "rf"
                 model_dir = os.path.join(pred_root, f"{model}__{mpath}"); os.makedirs(model_dir, exist_ok=True)
-                res = _select_and_eval(model, methods, RF_GRID, tcol,
+                res = _select_and_eval(model, methods, RF_GRID, tcol, wavenumbers,
+
+
                                        n_outer=args.outer_folds, n_inner=args.inner_folds, seed=args.random_state)
+
                 pd.DataFrame({f"{tcol}__true": res["y_true"].ravel(),
                               f"{tcol}__pred": res["y_pred"].ravel()}).to_excel(
                     os.path.join(model_dir, "selected.xlsx"), index=False
@@ -667,8 +701,9 @@ if __name__ == "__main__":
             if RUN_ACFNN:
                 model = "acfnn"
                 model_dir = os.path.join(pred_root, f"{model}__{mpath}"); os.makedirs(model_dir, exist_ok=True)
-                res = _select_and_eval(model, methods, ACFNN_GRID, tcol,
+                res = _select_and_eval(model, methods, hp_candidates, tcol, wavenumbers,
                                        n_outer=args.outer_folds, n_inner=args.inner_folds, seed=args.random_state)
+
                 pd.DataFrame({f"{tcol}__true": res["y_true"].ravel(),
                               f"{tcol}__pred": res["y_pred"].ravel()}).to_excel(
                     os.path.join(model_dir, "selected.xlsx"), index=False
@@ -692,8 +727,10 @@ if __name__ == "__main__":
                 model = "ipls"
                 model_dir = os.path.join(pred_root, f"{model}__{mpath}"); os.makedirs(model_dir, exist_ok=True)
                 hp_candidates = [{"n_components": int(c), "num_intervals": int(I)} for c in IPLS_COMPONENTS for I in IPLS_INTERVALS]
-                res = _select_and_eval(model, methods, hp_candidates, tcol,
+                res = _select_and_eval(model, methods, ACFNN_GRID, tcol, wavenumbers,
+
                                        n_outer=args.outer_folds, n_inner=args.inner_folds, seed=args.random_state)
+
                 pd.DataFrame({f"{tcol}__true": res["y_true"].ravel(),
                               f"{tcol}__pred": res["y_pred"].ravel()}).to_excel(
                     os.path.join(model_dir, "selected.xlsx"), index=False
