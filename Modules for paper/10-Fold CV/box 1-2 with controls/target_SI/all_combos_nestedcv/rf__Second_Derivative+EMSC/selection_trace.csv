@@ -1,0 +1,11 @@
+outer_fold,selected_hp,selected_hp_tag,mu_best,sd_best,n_inner,interval_a,interval_b,interval_start_cm-1,interval_end_cm-1
+1,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,0.0603023100538818,0.019393572563356637,5,,,,
+2,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,0.060565637611471504,0.023870031305274517,5,,,,
+3,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,0.05747891374150449,0.02041947213367694,5,,,,
+4,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,0.05383198566637952,0.010355743389089523,5,,,,
+5,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,0.05721745554300465,0.016728260218717438,5,,,,
+6,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,0.060130424364710965,0.023973385256754555,5,,,,
+7,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,0.05403523944678366,0.01461194672257176,5,,,,
+8,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,0.05305011867520062,0.021634031432447,5,,,,
+9,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,0.05725130177259634,0.016381036973567912,5,,,,
+10,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,0.05625622586027048,0.015724243121477813,5,,,,

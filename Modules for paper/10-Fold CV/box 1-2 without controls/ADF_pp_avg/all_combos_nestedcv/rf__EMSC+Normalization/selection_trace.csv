@@ -1,0 +1,11 @@
+outer_fold,selected_hp,selected_hp_tag,mu_best,sd_best,n_inner,interval_a,interval_b,interval_start_cm-1,interval_end_cm-1
+1,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,412.4101318967111,109.24842984533508,5,,,,
+2,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,392.3348390302042,91.86532027970887,5,,,,
+3,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,498.136189166883,204.2094715465948,5,,,,
+4,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,484.41238296556884,158.53981755751073,5,,,,
+5,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,427.4424306721624,89.64603259913684,5,,,,
+6,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,445.1590186385168,49.08669439007384,5,,,,
+7,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,464.6395078405516,43.396772036979634,5,,,,
+8,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,446.8030704607054,84.23266455126127,5,,,,
+9,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 25, ""min_samples_split"": 10, ""min_samples_leaf"": 48}",ne50_md25_mss10_msl48_mfsqrt,461.9343946664556,196.4516481691191,5,,,,
+10,"{""n_estimators"": 50, ""max_features"": ""sqrt"", ""max_depth"": 10, ""min_samples_split"": 10, ""min_samples_leaf"": 40}",ne50_md10_mss10_msl40_mfsqrt,484.81647546940366,162.93763264321845,5,,,,

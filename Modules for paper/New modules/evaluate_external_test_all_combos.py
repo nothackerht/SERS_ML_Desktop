@@ -32,7 +32,7 @@ import re
 import json
 import numpy as np
 import pandas as pd
-import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -40,6 +40,7 @@ from joblib import Parallel, delayed
 from sklearn.model_selection import GroupKFold
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import StratifiedKFold, KFold
 
 from sklearn.metrics import (
     mean_squared_error, r2_score,
@@ -370,63 +371,173 @@ if __name__ == "__main__":
     # ---------- core ----------
     rm_tr = GlobalGrouped(all_spectra=all_tr, meta=meta_tr, reps=REPS)
     Xte_full = all_te.T  # (reps*N_test, features)
+    # ---------------------- Fold-making helpers (sample-level) ----------------------
+    
+    def _iter_sample_folds(
+        n_samples: int,
+        n_splits: int,
+        seed: int,
+        strat_labels: np.ndarray | None = None,
+    ):
+        """
+        Yield (train_sample_ids, test_sample_ids) at the SAMPLE level.
+        - If strat_labels provided and valid for stratification, use StratifiedKFold(shuffle=True).
+        - Else use KFold(shuffle=True).
+        """
+        sample_ids = np.arange(n_samples, dtype=int)
+    
+        # Decide whether stratification is feasible (>= n_splits per class, ≥2 classes)
+        use_strat = False
+        if strat_labels is not None:
+            labs = np.asarray(strat_labels)
+            if labs.shape[0] == n_samples and len(np.unique(labs)) >= 2:
+                counts = {c: (labs == c).sum() for c in np.unique(labs)}
+                if min(counts.values()) >= n_splits:
+                    use_strat = True
+    
+        if use_strat:
+            skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+            for tr, te in skf.split(sample_ids, strat_labels):
+                yield sample_ids[tr], sample_ids[te]
+        else:
+            kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+            for tr, te in kf.split(sample_ids):
+                yield sample_ids[tr], sample_ids[te]
+    
+    
+    def _warn_fold_balance(
+        fold_id: int,
+        tr_ids: np.ndarray,
+        te_ids: np.ndarray,
+        strat_labels_full: np.ndarray | None,
+        tol_frac: float = 0.20,    # 20% absolute deviation allowed
+        min_test: int = 4,         # tiny fold warning
+    ):
+        """
+        Emit light warnings about fold size and class balance drift (when labels present).
+        """
+        if te_ids.size < min_test:
+            print(f"[WARN] outer fold {fold_id}: test fold very small (n={te_ids.size}).")
+    
+        if strat_labels_full is None:
+            return
+    
+        labs = strat_labels_full
+        glob = {c: (labs == c).mean() for c in np.unique(labs)}
+        te = {c: (labs[te_ids] == c).mean() for c in np.unique(labs)}
+    
+        for c in glob:
+            if abs(te[c] - glob[c]) > tol_frac:
+                print(
+                    f"[WARN] outer fold {fold_id}: class '{c}' proportion drift "
+                    f"({te[c]:.2f} vs global {glob[c]:.2f})."
+                )
+    
+    
+    def _expand_sample_ids_to_spectra(mask_sample_ids: np.ndarray, reps: int) -> np.ndarray:
+        """
+        Convert a boolean mask or an array of sample IDs into a boolean mask for the
+        (reps * N)-long spectra axis.
+        """
+        if mask_sample_ids.dtype == bool:
+            return np.repeat(mask_sample_ids, reps)
+        # it's an array of sample indices
+        N = int(mask_sample_ids.max()) + 1 if mask_sample_ids.size else 0
+        m = np.zeros(N, dtype=bool)
+        m[mask_sample_ids] = True
+        return np.repeat(m, reps)
 
     def nested_select_one(model_name: str, methods: list, target_col: str,
                           n_outer=10, n_inner=5, seed=42):
         """
         Group-aware nested CV on TRAIN to choose HP via 1-SE rule toward simplicity.
+        Now uses sample-level shuffled (and optionally stratified) folds, expanded back
+        to spectra so replicate grouping is preserved automatically.
+    
         Returns: dict with selection, CV metrics, and per-fold chosen HPs.
         """
+        # ---- Build TRAIN matrices at the current target ----
         X, Y, y_s, groups, meta_kept = rm_tr.build_xy(target_col, include_types=INCLUDE_TYPES)
+        # meta_kept has exactly N rows (patients) and aligns with y_s
         N = len(meta_kept)
-        sample_ids = np.arange(N)
-
-        # Candidate HP lists per model
+        reps_here = rm_tr.reps
+    
+        # Build stratification labels if controls are present
+        # Label map: DM1 -> 1, Control -> 0
+        strat_labels = None
+        if "Type" in meta_kept.columns:
+            if meta_kept["Type"].isin(["DM1", "Control"]).any():
+                strat_labels = (meta_kept["Type"].to_numpy() == "DM1").astype(int)
+    
+        # ---- Define candidate HP lists per model ----
         if model_name == "pls":
             hp_candidates = [{"n_components": int(c)} for c in PLS_COMPONENTS]
         elif model_name == "ipls":
-            hp_candidates = [{"n_components": int(c), "num_intervals": int(I)} for c in IPLS_COMPONENTS for I in IPLS_INTERVALS]
+            hp_candidates = [{"n_components": int(c), "num_intervals": int(I)}
+                             for c in IPLS_COMPONENTS for I in IPLS_INTERVALS]
         elif model_name == "rf":
             hp_candidates = RF_GRID
         elif model_name == "acfnn":
             hp_candidates = ACFNN_GRID
         else:
             raise ValueError(model_name)
-
-        gkf_outer = GroupKFold(n_splits=min(n_outer, N))
+    
+        # ---- OUTER folds (sample-level; shuffled, optionally stratified) ----
+        n_outer = min(n_outer, N)
         y_true_all, y_pred_all = [], []
         inner_trace = []
         fold_idx = 0
-
-        for tr_s_idx, te_s_idx in gkf_outer.split(sample_ids, groups=sample_ids):
+    
+        for tr_s, te_s in _iter_sample_folds(
+            n_samples=N, n_splits=n_outer, seed=seed, strat_labels=strat_labels
+        ):
             fold_idx += 1
-            tr_s = sample_ids[tr_s_idx]
-            te_s = sample_ids[te_s_idx]
-
-            mask_tr = np.isin(np.repeat(sample_ids, rm_tr.reps), tr_s)
-            mask_te = np.isin(np.repeat(sample_ids, rm_tr.reps), te_s)
-
+    
+            # Fold health / balance warnings
+            _warn_fold_balance(
+                fold_id=fold_idx, tr_ids=tr_s, te_ids=te_s,
+                strat_labels_full=strat_labels, tol_frac=0.20, min_test=4
+            )
+    
+            # Expand to spectra-level masks (keeps 9 reps together)
+            mask_tr = np.isin(np.repeat(np.arange(N), reps_here), tr_s)
+            mask_te = np.isin(np.repeat(np.arange(N), reps_here), te_s)
+    
             Xtr, Xte = X[mask_tr], X[mask_te]
             Ytr, Yte = Y[mask_tr], Y[mask_te]
-            groups_tr = groups[mask_tr]
-
-            gkf_inner = GroupKFold(n_splits=min(n_inner, len(np.unique(groups_tr))))
-
+    
+            # ---- INNER folds on TRAIN (sample-level; shuffled, optionally stratified) ----
+            n_inner_eff = min(n_inner, max(2, len(np.unique(tr_s))))
+            strat_labels_tr = strat_labels[tr_s] if strat_labels is not None else None
+    
             def score_hp(hp):
                 mse_folds = []
-                for itr, iva in gkf_inner.split(Xtr, groups=groups_tr):
-                    Xitr, Xiva = Xtr[itr], Xtr[iva]
-                    Yitr, Yiva = Ytr[itr], Ytr[iva]
-                    groups_itr = groups_tr[itr]
-
+                for itr_s, iva_s in _iter_sample_folds(
+                    n_samples=len(tr_s),
+                    n_splits=n_inner_eff,
+                    seed=seed + 17,  # different seed stream for inner loop
+                    strat_labels=strat_labels_tr
+                ):
+                    # map inner sample indices back to global TRAIN indices
+                    inner_tr_samples = tr_s[itr_s]
+                    inner_va_samples = tr_s[iva_s]
+    
+                    m_tr = np.isin(np.repeat(np.arange(N), reps_here), inner_tr_samples)
+                    m_va = np.isin(np.repeat(np.arange(N), reps_here), inner_va_samples)
+    
+                    Xitr, Xiva = X[m_tr], X[m_va]
+                    Yitr, Yiva = Y[m_tr], Y[m_va]
+    
                     if model_name == "ipls":
+                        # grouped interval selection on inner-train only
                         (a, b), _ = _best_interval_grouped(
-                            X_tr=Xitr, Y_tr=Yitr, groups_tr=groups_itr,
+                            X_tr=Xitr, Y_tr=Yitr,
+                            groups_tr=np.repeat(np.arange(len(inner_tr_samples)), reps_here),
                             preprocess_methods=methods,
                             n_components=int(hp["n_components"]),
                             num_intervals=int(hp["num_intervals"]),
-                            reps=rm_tr.reps,
-                            n_splits=max(3, min(5, int(len(np.unique(groups_itr))))),
+                            reps=reps_here,
+                            n_splits=max(3, min(5, len(inner_tr_samples)))
                         )
                         Xt_tr, Xt_va = _fit_transform_pair(Xitr[:, a:b], Xiva[:, a:b], methods)
                         mdl = PLSRegression(n_components=int(hp["n_components"]))
@@ -444,42 +555,44 @@ if __name__ == "__main__":
                             mlp = TorchRegressor(random_state=seed, **hp)
                             mlp.fit(Xt_tr, Yitr.ravel())
                             Yhat = mlp.predict(Xt_va).reshape(-1, 1)
-
-
-                    m_true = _sample_means_stds(Yiva, reps=rm_tr.reps)[0]
-                    m_pred = _sample_means_stds(Yhat, reps=rm_tr.reps)[0]
+    
+                    m_true = _sample_means_stds(Yiva, reps=reps_here)[0]
+                    m_pred = _sample_means_stds(Yhat, reps=reps_here)[0]
                     mse_folds.append(mean_squared_error(m_true, m_pred))
                 return float(np.mean(mse_folds)), float(np.std(mse_folds))
-            
+    
+            # Parallel score candidate HP on inner folds
             hp_stats = Parallel(n_jobs=-1, backend="loky")(
                 delayed(score_hp)(hp) for hp in hp_candidates
             )
-
             mus = [m for (m, s) in hp_stats]
             best_ix = int(np.argmin(mus))
             mu_best, sd_best = hp_stats[best_ix]
             pick = hp_candidates[best_ix]
-
-            # 1-SE rule toward simplicity
+    
+            # 1-SE toward simplicity
             for h, (m, s) in zip(hp_candidates, hp_stats):
                 if m <= mu_best + sd_best + 1e-12:
                     if _is_simpler(model_name, h, model_name, pick):
                         pick = h
-
+    
             inner_trace.append({
                 "outer_fold": fold_idx,
                 "selected_hp": pick,
                 "mu_best": float(mu_best),
                 "sd_best": float(sd_best),
             })
-
-            # Fit on outer-train with chosen HP; predict outer-test to build CV estimate
+    
+            # ---- Outer evaluation on this fold (train with pick → predict outer-test) ----
             if model_name == "ipls":
                 (a, b), _ = _best_interval_grouped(
-                    X_tr=Xtr, Y_tr=Ytr, groups_tr=groups_tr,
+                    X_tr=Xtr, Y_tr=Ytr,
+                    groups_tr=np.repeat(np.arange(len(tr_s)), reps_here),
                     preprocess_methods=methods,
-                    n_components=int(pick["n_components"]), num_intervals=int(pick["num_intervals"]),
-                    reps=rm_tr.reps, n_splits=max(3, min(5, int(len(np.unique(groups_tr))))),
+                    n_components=int(pick["n_components"]),
+                    num_intervals=int(pick["num_intervals"]),
+                    reps=reps_here,
+                    n_splits=max(3, min(5, len(tr_s))),
                 )
                 Xt_tr, Xt_te = _fit_transform_pair(Xtr[:, a:b], Xte[:, a:b], methods)
                 mdl = PLSRegression(n_components=int(pick["n_components"]))
@@ -497,21 +610,17 @@ if __name__ == "__main__":
                     mlp = TorchRegressor(random_state=seed, **pick)
                     mlp.fit(Xt_tr, Ytr.ravel())
                     Yhat = mlp.predict(Xt_te).reshape(-1, 1)
-
-
-            m_true = _sample_means_stds(Yte, reps=rm_tr.reps)[0]
-            m_pred = _sample_means_stds(Yhat, reps=rm_tr.reps)[0]
+    
+            m_true = _sample_means_stds(Yte, reps=reps_here)[0]
+            m_pred = _sample_means_stds(Yhat, reps=reps_here)[0]
             y_true_all.append(m_true); y_pred_all.append(m_pred)
-
-        # CV metrics
+    
+        # ---- Aggregate CV metrics across outer folds ----
         YT = np.concatenate(y_true_all).reshape(-1, 1)
         YP = np.concatenate(y_pred_all).reshape(-1, 1)
         mets = _metrics(YT, YP)
-
-        # Winner HP for this (model,methods) is the most frequently selected across outer folds;
-        # if tie, choose by lowest mean inner mu among ties; then simplicity.
-        # Simpler approach: just take the HP from the best outer fold selection by mu_best, then apply 1-SE among its neighbors.
-        # Here we take the modal "selected_hp".
+    
+        # ---- Choose modal HP across outer folds (ties broken downstream) ----
         from collections import Counter
         def _hp_key(hp):
             if model_name == "pls":   return f"pls|C={hp['n_components']}"
@@ -519,12 +628,11 @@ if __name__ == "__main__":
             if model_name == "acfnn": return f"ac|{_ac_tag(hp)}"
             if model_name == "ipls":  return f"ipls|C={hp['n_components']}__I={hp['num_intervals']}"
             return str(hp)
-
+    
         counts = Counter([_hp_key(r["selected_hp"]) for r in inner_trace])
         modal_key, _ = counts.most_common(1)[0]
-        # retrieve any instance with that key
         sel_hp = next(r["selected_hp"] for r in inner_trace if _hp_key(r["selected_hp"]) == modal_key)
-
+    
         return {
             "model": model_name,
             "methods": methods,
@@ -532,6 +640,7 @@ if __name__ == "__main__":
             "cv_metrics": mets,
             "inner_trace": inner_trace,
         }
+
 
     # For each target: do nested selection per (model, methods), pick the overall best by CV, then train on FULL TRAIN and eval on TEST
     for nice, tcol in TARGETS:

@@ -24,13 +24,31 @@ import re
 from pathlib import Path
 import numpy as np
 import pandas as pd
-from collections import defaultdict
-
-# --- ensure project root is on sys.path when running from modules/ ---
+# <-- put this BEFORE importing your local modules
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, '..'))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+from data_loader import load_data
+from preprocessing import Preprocessing
+from plot_parity import parity_plot_sample_level, save_outer_predictions_excel
+from ten_fold_cv_regression_global import _best_interval_grouped
+
+# --- sklearn ---
+from sklearn.cross_decomposition import PLSRegression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.neural_network import MLPRegressor
+from sklearn.metrics import (
+    mean_squared_error,
+    r2_score,
+    mean_absolute_error,
+    median_absolute_error,
+    explained_variance_score,
+)
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import GroupKFold
+
+
 # --- CLI shim: paths & settings come from main.py ---
 import argparse
 _cli = argparse.ArgumentParser(add_help=False)
@@ -53,35 +71,30 @@ INCLUDE_TYPES    = tuple([x.strip() for x in (args.include_types or "DM1,Control
 OUT_DIR_SPXY     = args.out_dir
 os.makedirs(OUT_DIR_SPXY, exist_ok=True)
 
-RESULT_DIRS_MAP  = {
-    "ADF_pp_avg": Path(args.results_dir_adf),
-    "HGS_pp_avg": Path(args.results_dir_hgs),
-    "target_SI":  Path(args.results_dir_si),
+# build from raw args first
+_raw_results_dirs = {
+    "ADF_pp_avg": args.results_dir_adf,
+    "HGS_pp_avg": args.results_dir_hgs,
+    "target_SI":  args.results_dir_si,
 }
 
-# seeds / repeats
-N_REPEATS           = int(args.spxy_repeats or 1)  # overrides the old constant
+# warn early, then normalize to Path only when present
+for k, v in _raw_results_dirs.items():
+    if not v:
+        print(f"[WARN] results_dir for {k} not provided.")
+    elif not Path(v).exists():
+        print(f"[WARN] results_dir for {k} does not exist: {v}")
+
+RESULT_DIRS_MAP = {k: Path(v) for k, v in _raw_results_dirs.items() if v}
+
+
+# seeds / repeats  (remove the duplicate copy)
+N_REPEATS           = int(args.spxy_repeats or 1)
 AGGREGATE_SELECTION = bool(int(args.aggregate_selection_across_seeds or 0))
 
-# --- your modules ---
-from modules.data_loader import load_data
-from modules.preprocessing import Preprocessing
-from modules.plot_parity import parity_plot_sample_level, save_outer_predictions_excel
-from modules.ten_fold_cv_regression_global import _best_interval_grouped
 
-# --- sklearn ---
-from sklearn.cross_decomposition import PLSRegression
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.neural_network import MLPRegressor
-from sklearn.metrics import (
-    mean_squared_error,
-    r2_score,
-    mean_absolute_error,
-    median_absolute_error,
-    explained_variance_score,
-)
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import GroupKFold
+
+
 
 
 
@@ -94,7 +107,7 @@ TARGETS = [
 REPS = 9             # spectra per sample
 CAL_FRAC = 0.80      # SPXY calibration fraction
 ALPHA = 0.5          # SPXY weighting between X and y distances
-N_REPEATS = 1        # set >1 to repeat with different SPXY starts
+
 INNER_FOLDS = 5      # inner CV folds on SPXY-train
 
 # ====================== HELPERS ======================
@@ -459,7 +472,10 @@ def main():
         orig_keep_idx = np.where(keep)[0]
 
         # combos source for this target (explicit per your mapping)
-        results_dir = RESULT_DIRS_MAP[tcol]
+        results_dir = RESULT_DIRS_MAP.get(tcol)
+        if results_dir is None:
+            raise FileNotFoundError(f"No results_dir provided for {tcol}.")
+
         combos_df = _load_combos_from_csv_dir(results_dir)
 
         # SPXY split (repeatable)

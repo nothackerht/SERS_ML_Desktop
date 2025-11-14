@@ -20,7 +20,28 @@ Compatible with your main.py launcher.
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Any
 import os
+# Must be set before importing NumPy/Sklearn so MKL/OpenBLAS init with 1 thread.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+# --- parallelism knobs (control via env at run-time) ---
+PHYS_CORES = int(os.environ.get("CV_PHYS_CORES", os.cpu_count() or 8))
+THREADS_PER_WORKER = int(os.environ.get("CV_THREADS_PER_WORKER", "4"))  # try 2–4 on your 32-thread CPU
+
+# enforce BLAS/OMP caps to our knob (overrides the setdefault caps above)
+os.environ["OMP_NUM_THREADS"] = str(THREADS_PER_WORKER)
+os.environ["MKL_NUM_THREADS"] = str(THREADS_PER_WORKER)
+os.environ["OPENBLAS_NUM_THREADS"] = str(THREADS_PER_WORKER)
+os.environ["NUMEXPR_NUM_THREADS"] = str(THREADS_PER_WORKER)
+
+# choose safe # of joblib workers so total threads ~= cores
+N_JOBS = max(1, min(PHYS_CORES // max(1, THREADS_PER_WORKER), PHYS_CORES))
+
 import json
+from threadpoolctl import threadpool_limits
+
+
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
@@ -108,6 +129,81 @@ def _hp_tag(model: str, hp: dict) -> str:
     if m == "rf": return _rf_tag(hp)
     if m == "acfnn": return _ac_tag(hp)
     return str(hp)
+# ---- iPLS interval-search cache (per inner split) ----
+_IPLS_CACHE = {}
+
+def _ipls_cache_key(groups_tuple, methods_tuple, n_components, num_intervals):
+    # groups_tuple should be tuple of UNIQUE sample IDs in the current inner-train split
+    return (groups_tuple, methods_tuple, int(n_components), int(num_intervals))
+
+def best_interval_cached(key, **kwargs):
+    # kwargs are exactly the args to _best_interval_grouped
+    if key in _IPLS_CACHE:
+        return _IPLS_CACHE[key]
+    res = _best_interval_grouped(**kwargs)
+    _IPLS_CACHE[key] = res
+    return res
+# ------------ Module-level preprocessing cache for inner CV ------------
+# ------------ Module-level preprocessing cache for inner CV ------------
+_PREPROC_CACHE = {}
+
+def get_preproc_cached(X_source_id: int,
+                       X_array: np.ndarray,
+                       idx_train_tuple: tuple,
+                       idx_val_tuple: tuple,
+                       methods_tuple: tuple,
+                       a: int | None = None,
+                       b: int | None = None):
+    """
+    Cached train-only preprocessing for an inner split.
+    Cached per-worker (joblib loky), keyed by (X_id, train idx, val idx, methods, [a:b]).
+    This version is self-contained and does NOT depend on `rm`.
+    """
+    key = (X_source_id, idx_train_tuple, idx_val_tuple, methods_tuple, a, b)
+    hit = _PREPROC_CACHE.get(key)
+    if hit is not None:
+        return hit
+
+    iti = np.fromiter(idx_train_tuple, dtype=int)
+    iva = np.fromiter(idx_val_tuple, dtype=int)
+
+    # Slice full or interval
+    if a is None:
+        Xtr_view = X_array[iti]           # (n_tr, F)
+        Xap_view = X_array[iva]           # (n_va, F)
+    else:
+        Xtr_view = X_array[iti][:, a:b]   # (n_tr, F')
+        Xap_view = X_array[iva][:, a:b]   # (n_va, F')
+
+    # === Train-only preprocessing, applied to val (no leakage) ===
+    # Work in feature×spectra space via views to minimize copies
+    Xtr = Xtr_view.T
+    Xap = Xap_view.T
+    for m in (methods_tuple or ()):
+        if m == "EMSC":
+            ref = np.mean(Xtr, axis=1)
+            Xtr = Preprocessing(Xtr).emsc(Xtr, reference=ref)
+            Xap = Preprocessing(Xap).emsc(Xap, reference=ref)
+        elif m == "Normalization":
+            Xtr = Preprocessing(Xtr).normalize_spectrum(Xtr)
+            Xap = Preprocessing(Xap).normalize_spectrum(Xap)
+        elif m == "SNV":
+            Xtr = Preprocessing(Xtr).snv(Xtr)
+            Xap = Preprocessing(Xap).snv(Xap)
+        elif m == "Second Derivative":
+            Xtr = Preprocessing(Xtr).second_derivative(Xtr)
+            Xap = Preprocessing(Xap).second_derivative(Xap)
+        elif m in ("", "No Preprocessing", "No preprocessing", "no preprocessing"):
+            pass
+        else:
+            raise ValueError(f"Unknown preprocessing method: {m}")
+
+    # Materialize once (row-major float32)
+    Xt_tr = np.asarray(Xtr.T, dtype=np.float32, order="C")
+    Xt_va = np.asarray(Xap.T, dtype=np.float32, order="C")
+
+    _PREPROC_CACHE[key] = (Xt_tr, Xt_va)
+    return Xt_tr, Xt_va
 
 def _is_simpler(model_a, hp_a, model_b, hp_b):
     """Simplicity order used for 1-SE tie-breaking."""
@@ -140,10 +236,11 @@ class TorchRegressor:
                  hidden_layer_sizes=(256,128),
                  activation="relu",
                  learning_rate_init=1e-3,
-                 alpha=1e-4,           # L2 weight decay
+                 alpha=1e-4,
                  max_iter=200,
-                 batch_size=64,
-                 random_state=42):
+                 batch_size=256,
+                 random_state=42,
+                 compile_model=False):       # <-- add this
         self.hidden_layer_sizes = hidden_layer_sizes
         self.activation = activation
         self.learning_rate_init = learning_rate_init
@@ -151,9 +248,22 @@ class TorchRegressor:
         self.max_iter = max_iter
         self.batch_size = batch_size
         self.random_state = random_state
+        self.compile_model = compile_model  # <-- store it
+    
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
+        if self.device.type == "cpu":
+            try:
+                torch.set_num_threads(1)
+            except Exception:
+                pass
+        self.compile_model = compile_model
         self.model_ = None
         self.input_dim_ = None
+
 
     def _build_mlp(self, in_dim):
         act_layer = nn.ReLU if self.activation == "relu" else nn.Tanh
@@ -165,40 +275,61 @@ class TorchRegressor:
             last = h
         layers.append(nn.Linear(last, 1))
         return nn.Sequential(*layers)
+    def _build_model(self, in_dim):
+        # Alias so fit() can call a generic builder
+        return self._build_mlp(in_dim)
 
     def fit(self, X, y):
         rng = np.random.RandomState(self.random_state)
         torch.manual_seed(self.random_state)
-
+    
         X = np.asarray(X, dtype=np.float32)
         y = np.asarray(y, dtype=np.float32).reshape(-1, 1)
+    
+        in_dim = X.shape[1]
+        self.input_dim_ = in_dim
+    
+        # Build once
+        self.model_ = self._build_model(in_dim)
+    
+        # Optional compile (PyTorch 2.x); safer OFF by default under joblib
+        if self.compile_model and self.device.type == "cuda":
+            try:
+                self.model_ = torch.compile(self.model_)
+            except Exception:
+                pass
 
-        self.input_dim_ = X.shape[1]
-        self.model_ = self._build_mlp(self.input_dim_).to(self.device)
-
-        optimizer = optim.Adam(self.model_.parameters(),
-                               lr=self.learning_rate_init,
-                               weight_decay=self.alpha)
+    
+        # Move to device and set train mode
+        self.model_.to(self.device)
+        self.model_.train()
+    
+        optimizer = optim.Adam(
+            self.model_.parameters(),
+            lr=self.learning_rate_init,
+            weight_decay=self.alpha
+        )
         loss_fn = nn.MSELoss()
-
+    
         # minibatch training
         n = X.shape[0]
         idx_all = np.arange(n)
-
+    
         for epoch in range(self.max_iter):
             rng.shuffle(idx_all)
             for start in range(0, n, self.batch_size):
-                batch_idx = idx_all[start:start+self.batch_size]
+                batch_idx = idx_all[start:start + self.batch_size]
                 xb = torch.from_numpy(X[batch_idx]).to(self.device)
                 yb = torch.from_numpy(y[batch_idx]).to(self.device)
-
+    
                 optimizer.zero_grad()
                 pred = self.model_(xb)
                 loss = loss_fn(pred, yb)
                 loss.backward()
                 optimizer.step()
-
+    
         return self
+
 
     def predict(self, X):
         X = np.asarray(X, dtype=np.float32)
@@ -217,16 +348,34 @@ def _best_interval_grouped(
 ):
     """
     Choose best contiguous interval via GroupKFold on the (train-only) data.
-    Returns (best_interval (a,b), best_mse).
+    Returns ((a, b), best_mse) where [a:b) are column indices into X_tr.
     """
-    intervals = _make_intervals(X_tr.shape[1], num_intervals)
-    n_splits = max(2, min(n_splits, int(len(np.unique(groups_tr)))))
-    inner = GroupKFold(n_splits=n_splits)
-    interval_mse = []
+    rng = np.random.RandomState(random_state)
 
-    def _fit_transform_local(X_train, X_apply, methods):
-        Xtr = X_train.T.copy()
-        Xap = X_apply.T.copy()
+    # Defensive casts
+    X_tr = np.asarray(X_tr, dtype=np.float32, order="C")
+    Y_tr = np.asarray(Y_tr, dtype=np.float32, order="C").reshape(-1, 1)
+    groups_tr = np.asarray(groups_tr)
+
+    # Build intervals
+    intervals = _make_intervals(X_tr.shape[1], int(num_intervals))
+
+    # Guard: if any interval is too small, coarsen the interval count (defensive; won't trigger for 1731/<=15)
+    if any((b - a) < 2 for (a, b) in intervals):
+        min_intervals = max(2, X_tr.shape[1] // 4)  # aim for >= ~4 features/interval
+        num_intervals = max(2, min(int(num_intervals), int(min_intervals)))
+        intervals = _make_intervals(X_tr.shape[1], int(num_intervals))
+
+    # Inner CV (grouped by sample)
+    n_splits = max(2, min(int(n_splits), int(len(np.unique(groups_tr)))))
+    inner = GroupKFold(n_splits=n_splits)
+
+    interval_mse: list[tuple[float, tuple[int, int]]] = []
+
+    # Local, train-only preprocessing on views to avoid extra copies
+    def _fit_transform_local(X_train: np.ndarray, X_apply: np.ndarray, methods):
+        Xtr = X_train.T  # views, no early copies
+        Xap = X_apply.T
         for m in (methods or []):
             if m == "EMSC":
                 ref = np.mean(Xtr, axis=1)
@@ -244,27 +393,42 @@ def _best_interval_grouped(
             elif m in ("", "No Preprocessing", "No preprocessing", "no preprocessing"):
                 pass
             else:
-                raise ValueError(f"Unknown preprocessing: {m}")
-        return Xtr.T.astype(np.float32), Xap.T.astype(np.float32)
+                raise ValueError(f"Unknown preprocessing method: {m}")
+        # materialize once on return
+        return (np.asarray(Xtr.T, dtype=np.float32, order="C"),
+                np.asarray(Xap.T, dtype=np.float32, order="C"))
 
+    # Evaluate each candidate interval with grouped inner CV
     for (a, b) in intervals:
+        # Skip degenerate intervals (shouldn't happen for your settings, but defensive)
+        if (b - a) < 2:
+            interval_mse.append((float("inf"), (a, b)))
+            continue
+
         fold_mse = []
-        for iti, ivo in inner.split(X_tr, groups=groups_tr):
-            Xt_i_tr, Xt_i_vl = X_tr[iti][:, a:b], X_tr[ivo][:, a:b]
-            Yt_i_tr, Yt_i_vl = Y_tr[iti],          Y_tr[ivo]
-            Xt_tr_p, Xt_vl_p = _fit_transform_local(Xt_i_tr, Xt_i_vl, preprocess_methods)
+        for itr, iva in inner.split(X_tr, groups=groups_tr):
+            Xtr_i, Xva_i = X_tr[itr][:, a:b], X_tr[iva][:, a:b]
+            Ytr_i, Yva_i = Y_tr[itr],         Y_tr[iva]
 
-            pls = PLSRegression(n_components=int(n_components))
-            pls.fit(Xt_tr_p, Yt_i_tr)
-            Y_vl_hat = pls.predict(Xt_vl_p)
+            # Train-only preprocessing on the interval
+            Xt_tr, Xt_va = _fit_transform_local(Xtr_i, Xva_i, preprocess_methods)
 
-            Y_vl_s  = _sample_means(Yt_i_vl,  reps=reps)
-            Y_hat_s = _sample_means(Y_vl_hat, reps=reps)
-            fold_mse.append(mean_squared_error(Y_vl_s, Y_hat_s))
-        interval_mse.append(float(np.mean(fold_mse)))
+            # Fit PLS on training spectra, predict validation spectra
+            mdl = PLSRegression(n_components=int(n_components))
+            mdl.fit(Xt_tr, Ytr_i)
+            Yhat = mdl.predict(Xt_va)
 
-    best_idx = int(np.argmin(interval_mse))
-    return (intervals[best_idx], float(interval_mse[best_idx]))
+            # Evaluate at the SAMPLE level (collapse 9 reps)
+            m_true, _ = _sample_means_stds(Yva_i, reps=reps)
+            m_pred, _ = _sample_means_stds(Yhat,  reps=reps)
+            fold_mse.append(mean_squared_error(m_true, m_pred))
+
+        interval_mse.append((float(np.mean(fold_mse)), (a, b)))
+
+    # Pick the best interval by lowest mean MSE
+    best_mse, best_interval = min(interval_mse, key=lambda t: t[0])
+    return best_interval, best_mse
+
 
 
 # ====================== Core class ======================
@@ -296,8 +460,9 @@ class GlobalGroupedCV:
 
     def _fit_transform(self, X_train: np.ndarray, X_apply: np.ndarray, methods: list):
         """Train-only preprocessing, apply to validation/test (no leakage)."""
-        Xtr = X_train.T.copy()
-        Xap = X_apply.T.copy()
+        # Use views (no copy) into column-major (features × spectra)
+        Xtr = X_train.T
+        Xap = X_apply.T
         for m in (methods or []):
             if m == "EMSC":
                 ref = np.mean(Xtr, axis=1)
@@ -316,7 +481,9 @@ class GlobalGroupedCV:
                 pass
             else:
                 raise ValueError(f"Unknown preprocessing: {m}")
-        return Xtr.T.astype(np.float32), Xap.T.astype(np.float32)
+        # Single cast + materialization at the end (row-major, float32)
+        return (np.asarray(Xtr.T, dtype=np.float32, order="C"),
+                np.asarray(Xap.T, dtype=np.float32, order="C"))
 
 
 # ====================== CLI runner (Nested CV, Group-aware) ======================
@@ -392,10 +559,11 @@ if __name__ == "__main__":
 
     RF_GRID = generate_random_rf_params(20, seed=args.random_state)
     ACFNN_GRID = [
-        {"hidden_layer_sizes": (256, 128),      "activation":"relu", "alpha":1e-4, "learning_rate_init":1e-3, "batch_size":64,  "max_iter":200},
-        {"hidden_layer_sizes": (512, 256),      "activation":"relu", "alpha":1e-4, "learning_rate_init":5e-4, "batch_size":64,  "max_iter":300},
-        {"hidden_layer_sizes": (256,256,128),   "activation":"relu", "alpha":1e-5, "learning_rate_init":1e-3, "batch_size":128, "max_iter":300},
+        {"hidden_layer_sizes": (256, 128),    "activation":"relu", "alpha":1e-4, "learning_rate_init":1e-3, "batch_size":256, "max_iter":200},
+        {"hidden_layer_sizes": (512, 256),    "activation":"relu", "alpha":1e-4, "learning_rate_init":5e-4, "batch_size":256, "max_iter":300},
+        {"hidden_layer_sizes": (256,256,128), "activation":"relu", "alpha":1e-5, "learning_rate_init":1e-3, "batch_size":512, "max_iter":300},
     ]
+
 
     RUN_PLS = True
     RUN_RF = True
@@ -434,7 +602,7 @@ if __name__ == "__main__":
             # Fallback: grouped CV with shuffled sample order (not stratified)
             rng = np.random.default_rng(seed)
             shuffled = rng.permutation(sample_ids)
-            from sklearn.model_selection import GroupKFold
+    
             outer_cv = GroupKFold(n_splits=n_outer_eff)
             outer_splits = outer_cv.split(shuffled, groups=shuffled)
 
@@ -481,10 +649,14 @@ if __name__ == "__main__":
             Ytr, Yte = Y[mask_tr], Y[mask_te]
             groups_tr = spec_groups[mask_tr]       # (9N_tr,) replicate-aware group labels for inner CV
 
+            # Prepare per-outer-fold cache context
+            _PREPROC_CACHE.clear()
+            X_id = id(Xtr)
 
             # inner grouped CV for HP selection
             n_inner_eff = max(2, min(n_inner, int(len(np.unique(groups_tr)))))
             gkf_inner = GroupKFold(n_splits=n_inner_eff)
+            
 
             def score_hp(hp):
                 mse_list = []
@@ -492,43 +664,70 @@ if __name__ == "__main__":
                     Xitr, Xiva = Xtr[itr], Xtr[iva]
                     Yitr, Yiva = Ytr[itr], Ytr[iva]
                     groups_itr = groups_tr[itr]
-
+            
                     if model_name == "ipls":
-                        (a, b), _ = _best_interval_grouped(
+                        # Cache the interval choice per inner split + methods + (C, I)
+                        groups_tuple = tuple(np.unique(groups_itr).tolist())
+                        methods_tuple = tuple(methods or [])
+                        key = _ipls_cache_key(groups_tuple, methods_tuple,
+                                              int(hp["n_components"]), int(hp["num_intervals"]))
+                        (a, b), _ = best_interval_cached(
+                            key,
                             X_tr=Xitr, Y_tr=Yitr, groups_tr=groups_itr,
                             preprocess_methods=methods,
                             n_components=int(hp["n_components"]),
                             num_intervals=int(hp["num_intervals"]),
                             reps=rm.reps, n_splits=min(5, n_inner_eff)
                         )
-                        Xt_tr, Xt_va = rm._fit_transform(Xitr[:, a:b], Xiva[:, a:b], methods)
+            
+                        # Reuse cached preprocessing for this exact inner split + interval
+                        Xt_tr, Xt_va = get_preproc_cached(
+                            X_id, Xtr,
+                            tuple(itr.tolist()), tuple(iva.tolist()),
+                            tuple(methods or []), a=a, b=b
+                        )
+
+            
                         mdl = PLSRegression(n_components=int(hp["n_components"]))
                         mdl.fit(Xt_tr, Yitr)
                         Yhat = mdl.predict(Xt_va)
+            
                     else:
-                        Xt_tr, Xt_va = rm._fit_transform(Xitr, Xiva, methods)
+                        # Reuse cached preprocessing for this inner split, full spectrum
+                        Xt_tr, Xt_va = get_preproc_cached(
+                            X_id, Xtr,
+                            tuple(itr.tolist()), tuple(iva.tolist()),
+                            tuple(methods or []), a=None, b=None
+                        )
+
                         if model_name == "pls":
                             mdl = PLSRegression(n_components=int(hp["n_components"]))
                             mdl.fit(Xt_tr, Yitr); Yhat = mdl.predict(Xt_va)
                         elif model_name == "rf":
-                            rf = RandomForestRegressor(**hp, random_state=seed, n_jobs=-1)
+                            rf = RandomForestRegressor(**hp, random_state=seed, n_jobs=1)
                             rf.fit(Xt_tr, Yitr.ravel()); Yhat = rf.predict(Xt_va).reshape(-1, 1)
                         elif model_name == "acfnn":
-                            mlp = TorchRegressor(random_state=seed, **hp)
+                            mlp = TorchRegressor(random_state=seed, compile_model=False, **hp)
                             mlp.fit(Xt_tr, Yitr.ravel())
                             Yhat = mlp.predict(Xt_va).reshape(-1, 1)
 
                         else:
                             raise ValueError(model_name)
-
+            
                     m_true, _ = _sample_means_stds(Yiva, reps=rm.reps)
                     m_pred, _ = _sample_means_stds(Yhat, reps=rm.reps)
                     mse_list.append(mean_squared_error(m_true, m_pred))
+            
                 return float(np.mean(mse_list)), float(np.std(mse_list))
 
-            hp_stats = Parallel(n_jobs=-1, backend="loky")(
-                delayed(score_hp)(hp) for hp in hp_candidates
-            )
+
+            # Ensure MKL/BLAS threads per worker = THREADS_PER_WORKER
+            with threadpool_limits(limits=THREADS_PER_WORKER):
+                hp_stats = Parallel(n_jobs=N_JOBS, backend="loky")(
+                    delayed(score_hp)(hp) for hp in hp_candidates
+                )
+
+
 
             mus = [m for (m, s) in hp_stats]
             best_ix = int(np.argmin(mus))
@@ -556,27 +755,40 @@ if __name__ == "__main__":
                 "interval_end_cm-1": np.nan,
             }
 
-
-            # Fit on full outer-train with chosen HP; for iPLS reselect interval on full outer-train
+            # Fit on full outer-train with chosen HP; for iPLS reselect interval on full outer-train (CACHED)
             if model_name == "ipls":
-                (a_eval, b_eval), _ = _best_interval_grouped(
+                # Cache key for outer-train (use its groups)
+                groups_tuple_outer = tuple(np.unique(groups_tr).tolist())
+                methods_tuple = tuple(methods or [])
+                key_outer = _ipls_cache_key(
+                    groups_tuple_outer, methods_tuple,
+                    int(pick["n_components"]), int(pick["num_intervals"])
+                )
+            
+                (a_eval, b_eval), _ = best_interval_cached(
+                    key_outer,
                     X_tr=Xtr, Y_tr=Ytr, groups_tr=groups_tr,
                     preprocess_methods=methods,
-                    n_components=int(pick["n_components"]), num_intervals=int(pick["num_intervals"]),
+                    n_components=int(pick["n_components"]),
+                    num_intervals=int(pick["num_intervals"]),
                     reps=rm.reps, n_splits=min(5, n_inner_eff)
                 )
-                Xt_tr, Xt_te = rm._fit_transform(Xtr[:, a_eval:b_eval], Xte[:, a_eval:b_eval], methods)
+            
+                Xt_tr, Xt_te = rm._fit_transform(
+                    Xtr[:, a_eval:b_eval], Xte[:, a_eval:b_eval], methods
+                )
                 mdl = PLSRegression(n_components=int(pick["n_components"]))
                 mdl.fit(Xt_tr, Ytr)
                 Yhat = mdl.predict(Xt_te)
-                # map selected interval (a_eval:b_eval) to wavenumbers
+            
+                # (keep your existing wavenumber mapping + trace_row updates)
                 if wavenumbers is not None and len(wavenumbers) == Xtr.shape[1]:
                     start_wn = float(wavenumbers[a_eval])
                     end_wn   = float(wavenumbers[b_eval - 1])
                 else:
                     start_wn = np.nan
                     end_wn   = np.nan
-
+            
                 trace_row.update({
                     "interval_a": int(a_eval),
                     "interval_b": int(b_eval),
@@ -590,12 +802,14 @@ if __name__ == "__main__":
                     mdl = PLSRegression(n_components=int(pick["n_components"]))
                     mdl.fit(Xt_tr, Ytr); Yhat = mdl.predict(Xt_te)
                 elif model_name == "rf":
-                    rf = RandomForestRegressor(**pick, random_state=seed, n_jobs=-1)
+                    rf = RandomForestRegressor(**pick, random_state=seed, n_jobs=1)
+
                     rf.fit(Xt_tr, Ytr.ravel()); Yhat = rf.predict(Xt_te).reshape(-1, 1)
                 elif model_name == "acfnn":
-                    mlp = TorchRegressor(random_state=seed, **pick)
+                    mlp = TorchRegressor(random_state=seed, compile_model=False, **pick)
                     mlp.fit(Xt_tr, Ytr.ravel())
                     Yhat = mlp.predict(Xt_te).reshape(-1, 1)
+
 
 
             inner_trace.append(trace_row)
@@ -701,7 +915,7 @@ if __name__ == "__main__":
             if RUN_ACFNN:
                 model = "acfnn"
                 model_dir = os.path.join(pred_root, f"{model}__{mpath}"); os.makedirs(model_dir, exist_ok=True)
-                res = _select_and_eval(model, methods, hp_candidates, tcol, wavenumbers,
+                res = _select_and_eval(model, methods, ACFNN_GRID, tcol, wavenumbers,
                                        n_outer=args.outer_folds, n_inner=args.inner_folds, seed=args.random_state)
 
                 pd.DataFrame({f"{tcol}__true": res["y_true"].ravel(),
@@ -727,7 +941,7 @@ if __name__ == "__main__":
                 model = "ipls"
                 model_dir = os.path.join(pred_root, f"{model}__{mpath}"); os.makedirs(model_dir, exist_ok=True)
                 hp_candidates = [{"n_components": int(c), "num_intervals": int(I)} for c in IPLS_COMPONENTS for I in IPLS_INTERVALS]
-                res = _select_and_eval(model, methods, ACFNN_GRID, tcol, wavenumbers,
+                res = _select_and_eval(model, methods, hp_candidates, tcol, wavenumbers,
 
                                        n_outer=args.outer_folds, n_inner=args.inner_folds, seed=args.random_state)
 
