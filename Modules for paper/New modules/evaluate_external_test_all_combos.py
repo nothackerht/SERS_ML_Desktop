@@ -534,9 +534,10 @@ if __name__ == "__main__":
     
                     if model_name == "ipls":
                         # grouped interval selection on inner-train only
+                        groups_tr_inner = spec_sample_ids_full[m_tr]
                         (a, b), _ = _best_interval_grouped(
                             X_tr=Xitr, Y_tr=Yitr,
-                            groups_tr=np.repeat(np.arange(len(inner_tr_samples)), reps_here),
+                            groups_tr=groups_tr_inner,
                             preprocess_methods=methods,
                             n_components=int(hp["n_components"]),
                             num_intervals=int(hp["num_intervals"]),
@@ -547,6 +548,7 @@ if __name__ == "__main__":
                         mdl = PLSRegression(n_components=int(hp["n_components"]))
                         mdl.fit(Xt_tr, Yitr)
                         Yhat = mdl.predict(Xt_va)
+
                     else:
                         Xt_tr, Xt_va = _fit_transform_pair(Xitr, Xiva, methods)
                         if model_name == "pls":
@@ -588,10 +590,12 @@ if __name__ == "__main__":
             })
     
             # ---- Outer evaluation on this fold (train with pick → predict outer-test) ----
+            # ---- Outer evaluation on this fold (train with pick → predict outer-test) ----
             if model_name == "ipls":
+                groups_tr_outer = spec_sample_ids_full[mask_tr]
                 (a, b), _ = _best_interval_grouped(
                     X_tr=Xtr, Y_tr=Ytr,
-                    groups_tr=np.repeat(np.arange(len(tr_s)), reps_here),
+                    groups_tr=groups_tr_outer,
                     preprocess_methods=methods,
                     n_components=int(pick["n_components"]),
                     num_intervals=int(pick["num_intervals"]),
@@ -602,6 +606,7 @@ if __name__ == "__main__":
                 mdl = PLSRegression(n_components=int(pick["n_components"]))
                 mdl.fit(Xt_tr, Ytr)
                 Yhat = mdl.predict(Xt_te)
+
             else:
                 Xt_tr, Xt_te = _fit_transform_pair(Xtr, Xte, methods)
                 if model_name == "pls":
