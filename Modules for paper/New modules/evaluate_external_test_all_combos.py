@@ -462,6 +462,10 @@ if __name__ == "__main__":
         N = len(meta_kept)
         reps_here = rm_tr.reps
     
+        # sample id (0..N-1) for every spectrum row in X (length = reps_here * N)
+        spec_sample_ids_full = np.repeat(np.arange(N, dtype=int), reps_here)
+
+    
         # Build stratification labels if controls are present
         # Label map: DM1 -> 1, Control -> 0
         strat_labels = None
