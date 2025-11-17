@@ -555,8 +555,11 @@ if __name__ == "__main__":
                             mdl = PLSRegression(n_components=int(hp["n_components"]))
                             mdl.fit(Xt_tr, Yitr); Yhat = mdl.predict(Xt_va)
                         elif model_name == "rf":
-                            rf = RandomForestRegressor(**hp, random_state=seed, n_jobs=-1)
-                            rf.fit(Xt_tr, Yitr.ravel()); Yhat = rf.predict(Xt_va).reshape(-1, 1)
+                            # Use single-threaded RF inside joblib.Parallel to avoid nested parallelism.
+                            rf = RandomForestRegressor(**hp, random_state=seed, n_jobs=1)
+                            rf.fit(Xt_tr, Yitr.ravel())
+                            Yhat = rf.predict(Xt_va).reshape(-1, 1)
+
                         elif model_name == "acfnn":
                             mlp = TorchRegressor(random_state=seed, **hp)
                             mlp.fit(Xt_tr, Yitr.ravel())
