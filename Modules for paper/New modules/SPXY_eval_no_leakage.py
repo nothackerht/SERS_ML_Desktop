@@ -485,6 +485,15 @@ def main():
             raise FileNotFoundError(f"No results_dir provided for {tcol}.")
 
         combos_df = _load_combos_from_csv_dir(results_dir)
+        # Filter to supported model types only
+        allowed_models = {"pls", "rf", "acfnn", "ipls"}
+        combos_df["model"] = combos_df["model"].astype(str).str.strip()
+        invalid = sorted(set(combos_df["model"].str.lower()) - allowed_models)
+        if invalid:
+            print(f"[WARN] Dropping combos with unsupported models for {tcol}: {invalid}")
+        combos_df = combos_df[combos_df["model"].str.lower().isin(allowed_models)].reset_index(drop=True)
+        if combos_df.empty:
+            raise ValueError(f"No valid (model, preprocessing, hp) combos found for {tcol} after filtering.")
 
         # SPXY split (repeatable)
         for r in range(N_REPEATS):
