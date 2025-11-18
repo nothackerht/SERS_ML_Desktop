@@ -366,12 +366,15 @@ def _load_combos_from_csv_dir(results_dir: Path) -> pd.DataFrame:
 
 # ====================== NEW: inner-CV scoring & tie-breakers ======================
 
-def _inner_cv_score(model_name, methods, hp, Xcal, ycal, groups_cal, n_splits=5, seed=42):
+def _inner_cv_score(model_name, methods, hp, Xcal, ycal, groups_cal, n_splits=INNER_FOLDS, seed=None):
     """
     Return mean±sd RMSE from GroupKFold on SPXY-train only.
     Splits respect sample grouping via groups_cal.
     Preprocessing and (for iPLS) interval selection are learned on fold-train only.
     """
+    if seed is None:
+        seed = BASE_SEED
+
     gkf = GroupKFold(n_splits=n_splits)
     rmses = []
 
@@ -420,6 +423,7 @@ def _inner_cv_score(model_name, methods, hp, Xcal, ycal, groups_cal, n_splits=5,
         rmses.append(np.sqrt(mean_squared_error(yva_true, yva_pred)))
 
     return float(np.mean(rmses)), float(np.std(rmses))
+
 
 def _is_simpler(model_a, hp_a, model_b, hp_b):
     """Simplicity ordering to break ties within ~1-SE band."""
