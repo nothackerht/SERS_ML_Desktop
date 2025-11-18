@@ -310,10 +310,21 @@ if __name__ == "__main__":
         strict=False,
         report_samples=5,
     )
+    # ---------- ensure numeric targets in TEST metadata (SI, HGS, ADF) ----------
+    for col in ("target_SI", "HGS_pp_avg", "ADF_pp_avg"):
+        if col in meta_te.columns:
+            # Convert to string, strip % and whitespace, then coerce to numeric
+            meta_te[col] = (
+                meta_te[col]
+                .astype(str)
+                .str.replace("%", "", regex=False)
+                .str.strip()
+            )
+            meta_te[col] = pd.to_numeric(meta_te[col], errors="coerce")
 
     # ---------- config (match your 10-fold grids) ----------
     TARGETS = [
-        ("Splicing Index", "target_SI"),
+        # ("Splicing Index", "target_SI"),
         ("Hand Grip Strength (%)", "HGS_pp_avg"),
         ("Average Ankle Dorsiflexion (%)", "ADF_pp_avg"),
     ]
@@ -446,6 +457,19 @@ if __name__ == "__main__":
         m = np.zeros(N, dtype=bool)
         m[mask_sample_ids] = True
         return np.repeat(m, reps)
+    def _spectral_groups_from_mask(mask_bool: np.ndarray, reps: int, N: int) -> np.ndarray:
+        """
+        Build group ids aligned to X[mask_bool] row order.
+        Each row corresponds to a spectrum; we map that back to its sample id and
+        then remap sample ids to compact 0..(n_unique-1) in appearance order.
+        """
+        # sample id for every spectrum in the full design (0..N-1 repeated 'reps' times)
+        spec_sample_ids_full = np.repeat(np.arange(N, dtype=int), reps)
+        # restrict to the selected rows; this matches X[mask_bool]
+        spec_sample_ids_sel = spec_sample_ids_full[mask_bool]
+        # compact mapping
+        _, inv = np.unique(spec_sample_ids_sel, return_inverse=True)
+        return inv
 
     def nested_select_one(model_name: str, methods: list, target_col: str,
                           n_outer=10, n_inner=5, seed=42):
@@ -461,7 +485,8 @@ if __name__ == "__main__":
         # meta_kept has exactly N rows (patients) and aligns with y_s
         N = len(meta_kept)
         reps_here = rm_tr.reps
-    
+        spec_sample_ids_full = np.repeat(np.arange(N), reps_here)
+
         # sample id (0..N-1) for every spectrum row in X (length = reps_here * N)
         spec_sample_ids_full = np.repeat(np.arange(N, dtype=int), reps_here)
 
@@ -519,21 +544,19 @@ if __name__ == "__main__":
                 for itr_s, iva_s in _iter_sample_folds(
                     n_samples=len(tr_s),
                     n_splits=n_inner_eff,
-                    seed=seed + 17,  # different seed stream for inner loop
+                    seed=seed + 17,
                     strat_labels=strat_labels_tr
                 ):
-                    # map inner sample indices back to global TRAIN indices
                     inner_tr_samples = tr_s[itr_s]
                     inner_va_samples = tr_s[iva_s]
-    
+            
                     m_tr = np.isin(np.repeat(np.arange(N), reps_here), inner_tr_samples)
                     m_va = np.isin(np.repeat(np.arange(N), reps_here), inner_va_samples)
-    
+            
                     Xitr, Xiva = X[m_tr], X[m_va]
                     Yitr, Yiva = Y[m_tr], Y[m_va]
-    
+            
                     if model_name == "ipls":
-                        # grouped interval selection on inner-train only
                         groups_tr_inner = spec_sample_ids_full[m_tr]
                         (a, b), _ = _best_interval_grouped(
                             X_tr=Xitr, Y_tr=Yitr,
@@ -548,32 +571,43 @@ if __name__ == "__main__":
                         mdl = PLSRegression(n_components=int(hp["n_components"]))
                         mdl.fit(Xt_tr, Yitr)
                         Yhat = mdl.predict(Xt_va)
-
+            
                     else:
                         Xt_tr, Xt_va = _fit_transform_pair(Xitr, Xiva, methods)
                         if model_name == "pls":
                             mdl = PLSRegression(n_components=int(hp["n_components"]))
-                            mdl.fit(Xt_tr, Yitr); Yhat = mdl.predict(Xt_va)
+                            mdl.fit(Xt_tr, Yitr)
+                            Yhat = mdl.predict(Xt_va)
+            
                         elif model_name == "rf":
-                            # Use single-threaded RF inside joblib.Parallel to avoid nested parallelism.
+                            # 1 thread here to avoid nested parallel deadlocks
                             rf = RandomForestRegressor(**hp, random_state=seed, n_jobs=1)
                             rf.fit(Xt_tr, Yitr.ravel())
                             Yhat = rf.predict(Xt_va).reshape(-1, 1)
-
+            
                         elif model_name == "acfnn":
+                            # Torch cannot be inside multiprocessing on Windows
                             mlp = TorchRegressor(random_state=seed, **hp)
                             mlp.fit(Xt_tr, Yitr.ravel())
                             Yhat = mlp.predict(Xt_va).reshape(-1, 1)
-    
+            
                     m_true = _sample_means_stds(Yiva, reps=reps_here)[0]
                     m_pred = _sample_means_stds(Yhat, reps=reps_here)[0]
                     mse_folds.append(mean_squared_error(m_true, m_pred))
+            
                 return float(np.mean(mse_folds)), float(np.std(mse_folds))
-    
-            # Parallel score candidate HP on inner folds
-            hp_stats = Parallel(n_jobs=-1, backend="loky")(
-                delayed(score_hp)(hp) for hp in hp_candidates
-            )
+            
+            
+            # ---- Parallel-safe HP evaluation ----
+            if model_name == "acfnn":
+                # NO joblib, run sequential to avoid worker crashes
+                hp_stats = [score_hp(hp) for hp in hp_candidates]
+            else:
+                # Use thread-based parallelism to avoid Windows process crashes
+                hp_stats = Parallel(n_jobs=4, backend="threading")(
+                    delayed(score_hp)(hp) for hp in hp_candidates
+                )
+
             mus = [m for (m, s) in hp_stats]
             best_ix = int(np.argmin(mus))
             mu_best, sd_best = hp_stats[best_ix]
@@ -663,9 +697,25 @@ if __name__ == "__main__":
         tr_keep_mask_samples = np.ones(len(meta_tr_kept), dtype=bool)  # already filtered in build_xy
         mask_tr_full = np.repeat(tr_keep_mask_samples, REPS)
         # TEST keep rows with numeric target
-        te_keep = pd.to_numeric(meta_te[tcol], errors="coerce").notna().to_numpy()
+        te_raw = meta_te[tcol]
+        te_num = pd.to_numeric(te_raw, errors="coerce")
+        te_keep = te_num.notna().to_numpy()
+
+        # Debug / safety checks
+        n_total = len(te_keep)
+        n_keep = int(te_keep.sum())
+        print(f"[DEBUG] Test non-NaN for {tcol}: {n_keep} / {n_total}")
+        if n_keep == 0:
+            print("[DEBUG] meta_te[", tcol, "] values:")
+            print(te_raw)
+            raise ValueError(
+                f"No finite test values found for target '{tcol}' after numeric coercion. "
+                f"Check y_metadata_test CSV for that column."
+            )
+
         Xte = Xte_full[np.repeat(te_keep, REPS)]
-        yte = meta_te.loc[te_keep, tcol].to_numpy(float)
+        yte = te_num[te_keep].to_numpy(dtype=float)
+
 
         tgt_out = os.path.join(args.out_dir, tcol)
         os.makedirs(tgt_out, exist_ok=True)
