@@ -203,14 +203,14 @@ def _train_predict(model_name, methods, hp, Xcal, ycal, Xval, groups_cal):
         rf = RandomForestRegressor(
             n_estimators=hp["n_estimators"], max_depth=hp["max_depth"],
             min_samples_split=hp["min_samples_split"], min_samples_leaf=hp["min_samples_leaf"],
-            max_features=hp["max_features"], random_state=42, n_jobs=-1
+            max_features=hp["max_features"], random_state=BASE_SEED, n_jobs=-1
         )
         rf.fit(Xt_tr, ycal.ravel())
         return rf.predict(Xt_va)
 
     if model_name == "acfnn":
         Xt_tr, Xt_va = _fit_transform_pair(Xcal, Xval, methods)
-        mlp = MLPRegressor(random_state=42, **hp)
+        mlp = MLPRegressor(random_state=BASE_SEED, **hp)
         mlp.fit(Xt_tr, ycal.ravel())
         return mlp.predict(Xt_va)
 
@@ -220,7 +220,7 @@ def _train_predict(model_name, methods, hp, Xcal, ycal, Xval, groups_cal):
             X_tr=Xcal, Y_tr=ycal, groups_tr=groups_cal,
             preprocess_methods=methods, n_components=n_components, num_intervals=num_intervals,
             reps=REPS, n_splits=max(3, min(5, int(len(np.unique(groups_cal))))),
-            random_state=42
+            random_state=BASE_SEED
         )
         Xt_tr, Xt_va = _fit_transform_pair(Xcal[:, a:b], Xval[:, a:b], methods)
         mdl = PLSRegression(n_components=n_components)
@@ -228,6 +228,7 @@ def _train_predict(model_name, methods, hp, Xcal, ycal, Xval, groups_cal):
         return mdl.predict(Xt_va).ravel()
 
     raise ValueError(f"Unsupported model: {model_name}")
+
 
 def _metrics(y_true, y_pred):
     y_true = np.asarray(y_true).ravel()
