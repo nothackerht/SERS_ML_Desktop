@@ -61,8 +61,11 @@ _cli.add_argument("--results_dir_adf")
 _cli.add_argument("--results_dir_hgs")
 _cli.add_argument("--results_dir_si")
 # SPXY seeds + aggregation toggle
-_cli.add_argument("--spxy_repeats", type=int, default=1)
-_cli.add_argument("--aggregate_selection_across_seeds", type=int, default=0)  # 1 = enable Option A
+_cli.add_argument("--spxy_repeats", type=int, default=10)  # default: 10 SPXY splits
+_cli.add_argument("--aggregate_selection_across_seeds", type=int, default=0)  # 1 = enable aggregation
+# global random state
+_cli.add_argument("--random_state", type=int, default=42)
+
 args, _ = _cli.parse_known_args()
 
 TRAIN_DATA_DIR   = args.data_dir
@@ -70,6 +73,8 @@ TRAIN_META_PATH  = args.meta_path
 INCLUDE_TYPES    = tuple([x.strip() for x in (args.include_types or "DM1,Control").split(",") if x.strip()])
 OUT_DIR_SPXY     = args.out_dir
 os.makedirs(OUT_DIR_SPXY, exist_ok=True)
+
+BASE_SEED = int(getattr(args, "random_state", 42))
 
 # build from raw args first
 _raw_results_dirs = {
@@ -87,11 +92,9 @@ for k, v in _raw_results_dirs.items():
 
 RESULT_DIRS_MAP = {k: Path(v) for k, v in _raw_results_dirs.items() if v}
 
-
-# seeds / repeats  (remove the duplicate copy)
+# seeds / repeats
 N_REPEATS           = int(args.spxy_repeats or 1)
 AGGREGATE_SELECTION = bool(int(args.aggregate_selection_across_seeds or 0))
-
 
 
 
