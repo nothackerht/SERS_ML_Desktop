@@ -466,6 +466,9 @@ def main():
 
     for nice, tcol in TARGETS:
         print(f"\n=== SPXY (no-leak) for {nice} ({tcol}) ===")
+        # per-target containers
+        spxy_split_rows = []         # CAL / VAL composition across repeats
+        all_spxy_metrics_rows = []   # metrics tables across repeats
 
         # per-target output root
         tgt_dir = os.path.join(OUT_DIR_SPXY, tcol)
@@ -497,7 +500,64 @@ def main():
 
         # SPXY split (repeatable)
         for r in range(N_REPEATS):
-            cal_idx_s, val_idx_s = _spxy_split(Xs, y_sample, cal_frac=CAL_FRAC, alpha=ALPHA, seed=42+r)
+            cal_idx_s, val_idx_s = _spxy_split(
+                Xs, y_sample,
+                cal_frac=CAL_FRAC,
+                alpha=ALPHA,
+                seed=BASE_SEED + r,
+            )
+        # After all repeats for this target, save SPXY split documentation
+        if spxy_split_rows:
+            df_splits = pd.DataFrame(spxy_split_rows)
+            splits_path = os.path.join(tgt_dir, f"{tcol}__SPXY_splits_NO_LEAK.xlsx")
+            df_splits.to_excel(splits_path, index=False)
+            print(f"[SPXY-SPLITS] wrote {splits_path} ({len(df_splits)} rows)")
+
+        # Aggregate selection metrics across SPXY repeats (if requested)
+        if AGGREGATE_SELECTION and all_spxy_metrics_rows:
+            df_all_rep = pd.concat(all_spxy_metrics_rows, ignore_index=True)
+
+            grouped = df_all_rep.groupby(
+                ["target", "model", "preprocessing", "hp"], as_index=False
+            ).agg({
+                "sel_cv_rmse": ["mean", "std"],
+                "sel_cv_sd":   ["mean"],
+                "val_rmse":    ["mean", "std"],
+                "val_r2":      ["mean", "std"],
+                "val_mae":     ["mean"],
+                "val_medae":   ["mean"],
+                "val_evs":     ["mean"],
+            })
+
+            # flatten multiindex columns
+            grouped.columns = [
+                "_".join([c for c in col if c]) if isinstance(col, tuple) else col
+                for col in grouped.columns.to_list()
+            ]
+
+            agg_path = os.path.join(tgt_dir, f"{tcol}__SPXY_aggregate_across_repeats_NO_LEAK.xlsx")
+            grouped.to_excel(agg_path, index=False)
+            print(f"[SPXY-AGG] wrote aggregated metrics across repeats → {agg_path}")
+
+            # Debug: report SPXY split sizes
+            print(f"[SPXY] {tcol} | repeat {r+1}: "
+                  f"N_valid={len(y_sample)}, Ncal={len(cal_idx_s)}, Nval={len(val_idx_s)}")
+
+            # Log which samples are in CAL / VAL for this target & repeat
+            for role, idx_array in (("CAL", cal_idx_s), ("VAL", val_idx_s)):
+                for sidx in idx_array:
+                    gidx = int(orig_keep_idx[sidx])
+                    row_meta = meta.iloc[gidx]
+                    spxy_split_rows.append({
+                        "target": tcol,
+                        "repeat": r+1,
+                        "role": role,                  # CAL or VAL
+                        "sample_idx_local": int(sidx), # index within 'keep' subset
+                        "sample_idx_global": gidx,     # index within full meta
+                        "SampleID": row_meta.get("SampleID", None),
+                        "Type": row_meta.get("Type", None),
+                    })
+
 
             # expand to spectra-level rows for modeling (CAL and VAL refer to SAMPLE rows)
             orig_cal_idx = orig_keep_idx[cal_idx_s]
@@ -590,6 +650,8 @@ def main():
             spxy_metrics_path = os.path.join(tgt_dir, f"{tcol}__metrics_all_combos_SPXY_NO_LEAK_r{r+1}.xlsx")
             spxy_metrics.to_excel(spxy_metrics_path, index=False)
             print(f"[SPXY-METRICS] wrote {spxy_metrics_path}  ({len(spxy_metrics)} combos)")
+            # collect for aggregate stats across repeats
+            all_spxy_metrics_rows.append(spxy_metrics.copy())
 
             # winner artifacts
             if best is not None:
