@@ -448,7 +448,7 @@ def _is_simpler(model_a, hp_a, model_b, hp_b):
 # ====================== MAIN ======================
 
 def main():
-    # Load data according to preset
+    # Load data
     wn, avg_tr, all_tr, meta = load_data(
         data_dir=TRAIN_DATA_DIR,
         metadata_path=TRAIN_META_PATH,
@@ -459,13 +459,14 @@ def main():
     )
 
     # scikit rows = samples
-    X_all = all_tr.T
-    X_sample = avg_tr.T  # sample-averaged spectra for SPXY distances
+    X_all = all_tr.T               # spectra-level (N_specs x features)
+    X_sample = avg_tr.T            # sample-averaged spectra for SPXY distances
 
     summary_rows = []
 
     for nice, tcol in TARGETS:
         print(f"\n=== SPXY (no-leak) for {nice} ({tcol}) ===")
+
         # per-target containers
         spxy_split_rows = []         # CAL / VAL composition across repeats
         all_spxy_metrics_rows = []   # metrics tables across repeats
@@ -488,6 +489,7 @@ def main():
             raise FileNotFoundError(f"No results_dir provided for {tcol}.")
 
         combos_df = _load_combos_from_csv_dir(results_dir)
+
         # Filter to supported model types only
         allowed_models = {"pls", "rf", "acfnn", "ipls"}
         combos_df["model"] = combos_df["model"].astype(str).str.strip()
@@ -498,46 +500,15 @@ def main():
         if combos_df.empty:
             raise ValueError(f"No valid (model, preprocessing, hp) combos found for {tcol} after filtering.")
 
-        # SPXY split (repeatable)
+        # ---------- SPXY repeats ----------
         for r in range(N_REPEATS):
+            # SPXY split at the SAMPLE level
             cal_idx_s, val_idx_s = _spxy_split(
                 Xs, y_sample,
                 cal_frac=CAL_FRAC,
                 alpha=ALPHA,
                 seed=BASE_SEED + r,
             )
-        # After all repeats for this target, save SPXY split documentation
-        if spxy_split_rows:
-            df_splits = pd.DataFrame(spxy_split_rows)
-            splits_path = os.path.join(tgt_dir, f"{tcol}__SPXY_splits_NO_LEAK.xlsx")
-            df_splits.to_excel(splits_path, index=False)
-            print(f"[SPXY-SPLITS] wrote {splits_path} ({len(df_splits)} rows)")
-
-        # Aggregate selection metrics across SPXY repeats (if requested)
-        if AGGREGATE_SELECTION and all_spxy_metrics_rows:
-            df_all_rep = pd.concat(all_spxy_metrics_rows, ignore_index=True)
-
-            grouped = df_all_rep.groupby(
-                ["target", "model", "preprocessing", "hp"], as_index=False
-            ).agg({
-                "sel_cv_rmse": ["mean", "std"],
-                "sel_cv_sd":   ["mean"],
-                "val_rmse":    ["mean", "std"],
-                "val_r2":      ["mean", "std"],
-                "val_mae":     ["mean"],
-                "val_medae":   ["mean"],
-                "val_evs":     ["mean"],
-            })
-
-            # flatten multiindex columns
-            grouped.columns = [
-                "_".join([c for c in col if c]) if isinstance(col, tuple) else col
-                for col in grouped.columns.to_list()
-            ]
-
-            agg_path = os.path.join(tgt_dir, f"{tcol}__SPXY_aggregate_across_repeats_NO_LEAK.xlsx")
-            grouped.to_excel(agg_path, index=False)
-            print(f"[SPXY-AGG] wrote aggregated metrics across repeats → {agg_path}")
 
             # Debug: report SPXY split sizes
             print(f"[SPXY] {tcol} | repeat {r+1}: "
@@ -558,8 +529,7 @@ def main():
                         "Type": row_meta.get("Type", None),
                     })
 
-
-            # expand to spectra-level rows for modeling (CAL and VAL refer to SAMPLE rows)
+            # ---------- expand SPXY split to spectra ----------
             orig_cal_idx = orig_keep_idx[cal_idx_s]
             orig_val_idx = orig_keep_idx[val_idx_s]
 
@@ -569,10 +539,11 @@ def main():
             Xcal = X_all[row_idx_cal]
             Xval = X_all[row_idx_val]
 
-            ycal = np.repeat(y_sample[cal_idx_s].reshape(-1,1), REPS, axis=0)
+            ycal = np.repeat(y_sample[cal_idx_s].reshape(-1, 1), REPS, axis=0)
             yval_true = y_sample[val_idx_s]
             groups_cal = _groups_for_spectra(len(cal_idx_s), reps=REPS)
 
+            # ---------- evaluate all combos for this repeat ----------
             spxy_rows = []
             best = None  # will hold a dict of the current best-by-selection
 
@@ -584,19 +555,28 @@ def main():
                 methods = _parse_methods(prep_label)
                 hp      = _parse_hp(model_name, hp_str)
 
-                # ---------- 1) selection on training only (inner GroupKFold) ----------
-                cv_rmse, cv_sd = _inner_cv_score(model_name, methods, hp, Xcal, ycal, groups_cal, n_splits=INNER_FOLDS)
+                # 1) selection on training only (inner GroupKFold)
+                cv_rmse, cv_sd = _inner_cv_score(
+                    model_name, methods, hp,
+                    Xcal, ycal, groups_cal,
+                    n_splits=INNER_FOLDS,
+                    seed=BASE_SEED,
+                )
 
-                # ---------- 2) lock combo → evaluate once on SPXY holdout ----------
+                # 2) lock combo → evaluate once on SPXY holdout
                 yval_hat_spec = _train_predict(model_name, methods, hp, Xcal, ycal, Xval, groups_cal)
                 yval_pred, yval_pred_sd = _sample_means_stds(yval_hat_spec, reps=REPS)
                 mets = _metrics(yval_true, yval_pred)
 
                 # save per-combo predictions under a model/prep folder
-                model_dir = os.path.join(pred_root, f"{model_name}__{('+'.join([m.replace(' ','_') for m in methods]) if methods else 'none')}")
+                methods_key = '+'.join([m.replace(' ', '_') for m in methods]) if methods else 'none'
+                model_dir = os.path.join(pred_root, f"{model_name}__{methods_key}")
                 os.makedirs(model_dir, exist_ok=True)
                 out_xlsx = os.path.join(model_dir, f"{hp_str}.xlsx")
-                pd.DataFrame({f"{tcol}__true": yval_true, f"{tcol}__pred": yval_pred}).to_excel(out_xlsx, index=False)
+                pd.DataFrame({
+                    f"{tcol}__true": yval_true,
+                    f"{tcol}__pred": yval_pred
+                }).to_excel(out_xlsx, index=False)
 
                 # record metrics row (selection vs validation)
                 spxy_rows.append({
@@ -616,56 +596,64 @@ def main():
                     "val_evs": mets["evs"],
                 })
 
-                # ---------- 3) track winner BY TRAIN-ONLY EVIDENCE (1-SE toward simplicity) ----------
+                # 3) track winner BY TRAIN-ONLY EVIDENCE (1-SE toward simplicity)
                 if best is None:
                     best = {
                         "sel_cv_rmse": cv_rmse, "sel_cv_sd": cv_sd,
                         "model": model_name, "methods": methods, "hp": hp_str,
                         "y_pred_best": yval_pred, "y_pred_sd_best": yval_pred_sd,
-                        "val_rmse": mets["rmse"], "val_r2": mets["r2"]
+                        "val_rmse": mets["rmse"], "val_r2": mets["r2"],
                     }
                 else:
-                    # one-SE band anchored at current best
                     thresh = best["sel_cv_rmse"] + best["sel_cv_sd"]
+                    is_simpler = _is_simpler(
+                        model_name, hp,
+                        best["model"], _parse_hp(best["model"], best["hp"])
+                    )
                     if (cv_rmse < best["sel_cv_rmse"] - 1e-12) or \
-                       (cv_rmse <= thresh and _is_simpler(model_name, hp, best["model"], _parse_hp(best["model"], best["hp"]))):
+                       (cv_rmse <= thresh and is_simpler):
                         best.update({
                             "sel_cv_rmse": cv_rmse, "sel_cv_sd": cv_sd,
                             "model": model_name, "methods": methods, "hp": hp_str,
                             "y_pred_best": yval_pred, "y_pred_sd_best": yval_pred_sd,
-                            "val_rmse": mets["rmse"], "val_r2": mets["r2"]
+                            "val_rmse": mets["rmse"], "val_r2": mets["r2"],
                         })
 
             # write consolidated SPXY metrics table for this target & repeat
             if spxy_rows:
-                spxy_metrics = pd.DataFrame(spxy_rows).sort_values(
-                    by=["sel_cv_rmse","model","preprocessing","hp"]
-                ).reset_index(drop=True)
+                spxy_metrics = (
+                    pd.DataFrame(spxy_rows)
+                    .sort_values(by=["sel_cv_rmse", "model", "preprocessing", "hp"])
+                    .reset_index(drop=True)
+                )
             else:
                 spxy_metrics = pd.DataFrame(columns=[
                     "repeat","target","model","preprocessing","hp","cv","cv_method",
                     "sel_cv_rmse","sel_cv_sd","val_rmse","val_r2","val_mae","val_medae","val_evs"
                 ])
 
-            spxy_metrics_path = os.path.join(tgt_dir, f"{tcol}__metrics_all_combos_SPXY_NO_LEAK_r{r+1}.xlsx")
+            spxy_metrics_path = os.path.join(
+                tgt_dir, f"{tcol}__metrics_all_combos_SPXY_NO_LEAK_r{r+1}.xlsx"
+            )
             spxy_metrics.to_excel(spxy_metrics_path, index=False)
             print(f"[SPXY-METRICS] wrote {spxy_metrics_path}  ({len(spxy_metrics)} combos)")
-            # collect for aggregate stats across repeats
             all_spxy_metrics_rows.append(spxy_metrics.copy())
 
-            # winner artifacts
+            # winner artifacts for this repeat
             if best is not None:
-                model_best   = best["model"]
-                methods_best = best["methods"]
-                hp_best      = best["hp"]
-                y_pred_best  = best["y_pred_best"]
-                y_pred_sd_best = best["y_pred_sd_best"]
+                model_best      = best["model"]
+                methods_best    = best["methods"]
+                hp_best         = best["hp"]
+                y_pred_best     = best["y_pred_best"]
+                y_pred_sd_best  = best["y_pred_sd_best"]
 
                 methods_label = " + ".join(methods_best) if methods_best else "No Preprocessing"
                 methods_path  = "+".join(m.replace(" ","_") for m in methods_best) if methods_best else "none"
-                title_suffix  = (f"{model_best.upper()} | {methods_label} | HP: {hp_best} | "
-                                 f"SPXY {int(CAL_FRAC*100)}/{int((1-CAL_FRAC)*100)} | "
-                                 f"Selected by inner-CV (RMSE={best['sel_cv_rmse']:.3f}±{best['sel_cv_sd']:.3f})")
+                title_suffix  = (
+                    f"{model_best.upper()} | {methods_label} | HP: {hp_best} | "
+                    f"SPXY {int(CAL_FRAC*100)}/{int((1-CAL_FRAC)*100)} | "
+                    f"Selected by inner-CV (RMSE={best['sel_cv_rmse']:.3f}±{best['sel_cv_sd']:.3f})"
+                )
 
                 winner_dir = os.path.join(tgt_dir, f"winner_SPXY__{model_best}__{methods_path}")
                 os.makedirs(winner_dir, exist_ok=True)
@@ -689,13 +677,15 @@ def main():
                     y_pred_sample=np.asarray(y_pred_best).reshape(-1,1),
                     meta_kept=meta_val,
                     target_order=(tcol,),
-                    out_path=os.path.join(winner_dir, f"{tcol}__winner_SPXY_predictions_NO_LEAK_r{r+1}.xlsx"),
+                    out_path=os.path.join(
+                        winner_dir,
+                        f"{tcol}__winner_SPXY_predictions_NO_LEAK_r{r+1}.xlsx"
+                    ),
                     y_true_sample_std=None,
                     y_pred_sample_std=np.asarray(y_pred_sd_best).reshape(-1,1),
                 )
 
-            # add run summary (best-of-repeat)
-            if best is not None:
+                # add run summary (best-of-repeat)
                 summary_rows.append({
                     "target": tcol,
                     "repeat": r+1,
@@ -710,12 +700,47 @@ def main():
                     "val_r2": float(best["val_r2"]),
                 })
 
+        # ---------- after all repeats for this target ----------
+
+        # Save SPXY split documentation
+        if spxy_split_rows:
+            df_splits = pd.DataFrame(spxy_split_rows)
+            splits_path = os.path.join(tgt_dir, f"{tcol}__SPXY_splits_NO_LEAK.xlsx")
+            df_splits.to_excel(splits_path, index=False)
+            print(f"[SPXY-SPLITS] wrote {splits_path} ({len(df_splits)} rows)")
+
+        # Aggregate selection metrics across SPXY repeats (if requested)
+        if AGGREGATE_SELECTION and all_spxy_metrics_rows:
+            df_all_rep = pd.concat(all_spxy_metrics_rows, ignore_index=True)
+            grouped = df_all_rep.groupby(
+                ["target", "model", "preprocessing", "hp"], as_index=False
+            ).agg({
+                "sel_cv_rmse": ["mean", "std"],
+                "sel_cv_sd":   ["mean"],
+                "val_rmse":    ["mean", "std"],
+                "val_r2":      ["mean", "std"],
+                "val_mae":     ["mean"],
+                "val_medae":   ["mean"],
+                "val_evs":     ["mean"],
+            })
+
+            # flatten multiindex columns
+            grouped.columns = [
+                "_".join([c for c in col if c]) if isinstance(col, tuple) else col
+                for col in grouped.columns.to_list()
+            ]
+
+            agg_path = os.path.join(tgt_dir, f"{tcol}__SPXY_aggregate_across_repeats_NO_LEAK.xlsx")
+            grouped.to_excel(agg_path, index=False)
+            print(f"[SPXY-AGG] wrote aggregated metrics across repeats → {agg_path}")
+
     # write summary across targets / repeats
     if summary_rows:
         df_sum = pd.DataFrame(summary_rows)
         out_sum = os.path.join(OUT_DIR_SPXY, "spxy_summary_NO_LEAK.xlsx")
         df_sum.to_excel(out_sum, index=False)
         print(f"\n[OK] Wrote SPXY summary → {out_sum}")
+
 
 if __name__ == "__main__":
     main()

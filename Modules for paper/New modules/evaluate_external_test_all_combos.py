@@ -324,7 +324,7 @@ if __name__ == "__main__":
 
     # ---------- config (match your 10-fold grids) ----------
     TARGETS = [
-        # ("Splicing Index", "target_SI"),
+        ("Splicing Index", "target_SI"),
         ("Hand Grip Strength (%)", "HGS_pp_avg"),
         ("Average Ankle Dorsiflexion (%)", "ADF_pp_avg"),
     ]
