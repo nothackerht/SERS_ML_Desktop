@@ -36,24 +36,28 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
 from joblib import Parallel, delayed
 from sklearn.model_selection import GroupKFold
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import StratifiedKFold, KFold
-import multiprocessing
 from sklearn.metrics import (
     mean_squared_error, r2_score,
     mean_absolute_error, median_absolute_error, explained_variance_score,
 )
 
+import multiprocessing
+
 # local modules (match your ten_fold module import style)
 from data_loader import load_data
 from preprocessing import Preprocessing
 from plot_parity import parity_plot_sample_level, save_outer_predictions_excel
-# Use almost all logical cores for HP search (leave 1–2 free)
-N_JOBS = max(1, multiprocessing.cpu_count() - 2)
-print(f"[INFO] Using {N_JOBS} parallel jobs for HP search")
+
+# Number of PROCESSES for outer (model × preprocessing) level parallelism
+N_PROC = min(8, max(1, multiprocessing.cpu_count() - 2))
+print(f"[INFO] Using {N_PROC} processes for model × preprocessing combos")
+
 
 # ====================== Small utilities ======================
 
