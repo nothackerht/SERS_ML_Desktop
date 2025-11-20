@@ -695,22 +695,128 @@ if __name__ == "__main__":
             "cv_metrics": mets,
             "inner_trace": inner_trace,
         }
+    def run_combo(
+        model: str,
+        methods: list,
+        target_name: str,
+        target_col: str,
+        args,
+        include_types: tuple,
+        rm_tr: GlobalGrouped,
+        Xte_target: np.ndarray,
+        yte_target: np.ndarray,
+        rf_grid: list,
+        acfnn_grid: list,
+        pls_components: list,
+        ipls_components: list,
+        ipls_intervals: list,
+    ):
+        """
+        Run nested CV selection + full-train + external evaluation for a single
+        (model, preprocessing) combo on one target. Designed to be picklable and
+        used inside joblib.Parallel(..., backend='loky').
+        """
+        # Nested selection on TRAIN only
+        sel = nested_select_one(
+            model_name=model,
+            methods=methods,
+            target_col=target_col,
+            n_outer=args.outer_folds,
+            n_inner=args.inner_folds,
+            seed=args.random_state,
+            rm_tr=rm_tr,
+            include_types=include_types,
+            pls_components=pls_components,
+            ipls_components=ipls_components,
+            ipls_intervals=ipls_intervals,
+            rf_grid=rf_grid,
+            acfnn_grid=acfnn_grid,
+        )
+        hp = sel["selected_hp"]
+        cv_mets = sel["cv_metrics"]
+    
+        # Full TRAIN matrices for this target
+        Xtr_all, Ytr_all, ytr_s, groups_tr_all, meta_tr_kept = rm_tr.build_xy(
+            target_col, include_types=include_types
+        )
+    
+        reps_here = rm_tr.reps
+    
+        # Final training on FULL TRAIN + external evaluation
+        if model == "ipls":
+            (a, b), _ = _best_interval_grouped(
+                X_tr=Xtr_all, Y_tr=Ytr_all, groups_tr=groups_tr_all,
+                preprocess_methods=methods,
+                n_components=int(hp["n_components"]),
+                num_intervals=int(hp["num_intervals"]),
+                reps=reps_here,
+                n_splits=max(3, min(5, int(len(np.unique(groups_tr_all))))),
+            )
+            Xt_tr, Xt_te = _fit_transform_pair(Xtr_all[:, a:b], Xte_target[:, a:b], methods)
+            mdl = PLSRegression(n_components=int(hp["n_components"]))
+            mdl.fit(Xt_tr, Ytr_all)
+            yhat_ext_spec = mdl.predict(Xt_te).ravel()
+            hp_tag = f"C={hp['n_components']}__I={hp['num_intervals']}"
+        else:
+            Xt_tr, Xt_te = _fit_transform_pair(Xtr_all, Xte_target, methods)
+            if model == "pls":
+                mdl = PLSRegression(n_components=int(hp["n_components"]))
+                mdl.fit(Xt_tr, Ytr_all)
+                yhat_ext_spec = mdl.predict(Xt_te).ravel()
+                hp_tag = f"C={hp['n_components']}"
+            elif model == "rf":
+                rf = RandomForestRegressor(**hp, random_state=args.random_state, n_jobs=-1)
+                rf.fit(Xt_tr, Ytr_all.ravel())
+                yhat_ext_spec = rf.predict(Xt_te)
+                hp_tag = _rf_tag(hp)
+            elif model == "acfnn":
+                mlp = TorchRegressor(random_state=args.random_state, **hp)
+                mlp.fit(Xt_tr, Ytr_all.ravel())
+                yhat_ext_spec = mlp.predict(Xt_te).ravel()
+                hp_tag = _ac_tag(hp)
+            else:
+                raise ValueError(model)
+    
+        # Collapse to sample level and compute external metrics
+        y_pred_s, y_pred_std = _sample_means_stds(yhat_ext_spec, reps=reps_here)
+        ext_mets = _metrics(yte_target, y_pred_s)
+    
+        mlabel = " + ".join(methods) if methods else "No Preprocessing"
+    
+        row = {
+            "target": target_col,
+            "model": model,
+            "preprocessing": mlabel,
+            "hp": hp_tag,
+            # CV metrics (selection basis)
+            "cv_rmse": cv_mets["rmse"], "cv_r2": cv_mets["r2"],
+            "cv_mae": cv_mets["mae"], "cv_medae": cv_mets["medae"], "cv_evs": cv_mets["evs"],
+            # External metrics (report only; not used for selection)
+            "ext_rmse": ext_mets["rmse"], "ext_r2": ext_mets["r2"],
+            "ext_mae": ext_mets["mae"], "ext_medae": ext_mets["medae"], "ext_evs": ext_mets["evs"],
+        }
+    
+        best_candidate = {
+            "model": model,
+            "methods": methods,
+            "hp": hp,
+            "hp_tag": hp_tag,
+            "cv_rmse": cv_mets["rmse"],
+            "ext_preds_s": y_pred_s,
+            "ext_preds_std": y_pred_std,
+        }
+    
+        return {"row": row, "best": best_candidate}
 
-
-    # For each target: do nested selection per (model, methods), pick the overall best by CV, then train on FULL TRAIN and eval on TEST
+    # For each target: parallel over (model, methods) combos with outer processes
     for nice, tcol in TARGETS:
         print(f"\n=== External evaluation (train 1–2 -> test 3) for {nice} ({tcol}) ===")
 
-        # Build TRAIN and TEST matrices for this target
-        Xtr_all, Ytr_all, ytr_s, groups_tr_all, meta_tr_kept = rm_tr.build_xy(tcol, include_types=INCLUDE_TYPES)
-        tr_keep_mask_samples = np.ones(len(meta_tr_kept), dtype=bool)  # already filtered in build_xy
-        mask_tr_full = np.repeat(tr_keep_mask_samples, REPS)
-        # TEST keep rows with numeric target
+        # --- Build TEST matrices for this target (once) ---
         te_raw = meta_te[tcol]
         te_num = pd.to_numeric(te_raw, errors="coerce")
         te_keep = te_num.notna().to_numpy()
 
-        # Debug / safety checks
         n_total = len(te_keep)
         n_keep = int(te_keep.sum())
         print(f"[DEBUG] Test non-NaN for {tcol}: {n_keep} / {n_total}")
@@ -722,83 +828,53 @@ if __name__ == "__main__":
                 f"Check y_metadata_test CSV for that column."
             )
 
-        Xte = Xte_full[np.repeat(te_keep, REPS)]
+        Xte_target = Xte_full[np.repeat(te_keep, REPS)]
         yte = te_num[te_keep].to_numpy(dtype=float)
-
 
         tgt_out = os.path.join(args.out_dir, tcol)
         os.makedirs(tgt_out, exist_ok=True)
 
-        # Accumulate per-(model,preproc) rows with CV & External metrics for the SELECTED HP
-        rows = []
-        best = None  # track best by CV rmse, then simplicity
-
-        # iterate preprocessing chains
+        # ---------- BUILD COMBOS ----------
+        combos_parallel = []
         for methods in PREPROCESS_GRID:
-            mlabel = " + ".join(methods) if methods else "No Preprocessing"
+            for model in ("pls", "rf", "ipls"):   # PLS / RF / iPLS in processes
+                combos_parallel.append((model, methods))
 
-            for model in ("pls", "rf", "acfnn", "ipls"):
-                sel = nested_select_one(model, methods, tcol, n_outer=args.outer_folds, n_inner=args.inner_folds, seed=args.random_state)
-                hp = sel["selected_hp"]
-                cv_mets = sel["cv_metrics"]
+        results = Parallel(n_jobs=N_PROC, backend="loky")(
+            delayed(run_combo)(
+                model, methods, nice, tcol, args, INCLUDE_TYPES,
+                rm_tr, Xte_target, yte,
+                RF_GRID, ACFNN_GRID,
+                PLS_COMPONENTS, IPLS_COMPONENTS, IPLS_INTERVALS,
+            )
+            for (model, methods) in combos_parallel
+        )
 
-                # Train on FULL TRAIN with selected HP; for iPLS reselect interval on full train (grouped)
-                if model == "ipls":
-                    (a, b), _ = _best_interval_grouped(
-                        X_tr=Xtr_all, Y_tr=Ytr_all, groups_tr=groups_tr_all,
-                        preprocess_methods=methods,
-                        n_components=int(hp["n_components"]), num_intervals=int(hp["num_intervals"]),
-                        reps=REPS, n_splits=max(3, min(5, int(len(np.unique(groups_tr_all))))),
-                    )
-                    Xt_tr, Xt_te = _fit_transform_pair(Xtr_all[:, a:b], Xte[:, a:b], methods)
-                    mdl = PLSRegression(n_components=int(hp["n_components"]))
-                    mdl.fit(Xt_tr, Ytr_all)
-                    yhat_ext_spec = mdl.predict(Xt_te).ravel()
-                    hp_tag = f"C={hp['n_components']}__I={hp['num_intervals']}"
-                else:
-                    Xt_tr, Xt_te = _fit_transform_pair(Xtr_all, Xte, methods)
-                    if model == "pls":
-                        mdl = PLSRegression(n_components=int(hp["n_components"]))
-                        mdl.fit(Xt_tr, Ytr_all); yhat_ext_spec = mdl.predict(Xt_te).ravel()
-                        hp_tag = f"C={hp['n_components']}"
-                    elif model == "rf":
-                        rf = RandomForestRegressor(**hp, random_state=args.random_state, n_jobs=-1)
-                        rf.fit(Xt_tr, Ytr_all.ravel()); yhat_ext_spec = rf.predict(Xt_te)
-                        hp_tag = _rf_tag(hp)
-                    elif model == "acfnn":
-                        mlp = TorchRegressor(random_state=args.random_state, **hp)
-                        mlp.fit(Xt_tr, Ytr_all.ravel())
-                        yhat_ext_spec = mlp.predict(Xt_te)
-                        hp_tag = _ac_tag(hp)
+        # Run AC-FNN combos sequentially (Torch + Windows is touchy with multiprocessing)
+        for methods in PREPROCESS_GRID:
+            res = run_combo(
+                "acfnn", methods, nice, tcol, args, INCLUDE_TYPES,
+                rm_tr, Xte_target, yte,
+                RF_GRID, ACFNN_GRID,
+                PLS_COMPONENTS, IPLS_COMPONENTS, IPLS_INTERVALS,
+            )
+            results.append(res)
 
-
-                # Collapse predictions to sample level and compute EXTERNAL metrics
-                y_pred_s, y_pred_std = _sample_means_stds(yhat_ext_spec, reps=REPS)
-                ext_mets = _metrics(yte, y_pred_s)
-
-                rows.append({
-                    "target": tcol,
-                    "model": model,
-                    "preprocessing": mlabel,
-                    "hp": hp_tag,
-                    # CV metrics (selection basis)
-                    "cv_rmse": cv_mets["rmse"], "cv_r2": cv_mets["r2"],
-                    "cv_mae": cv_mets["mae"], "cv_medae": cv_mets["medae"], "cv_evs": cv_mets["evs"],
-                    # External metrics (report only; not used for selection)
-                    "ext_rmse": ext_mets["rmse"], "ext_r2": ext_mets["r2"],
-                    "ext_mae": ext_mets["mae"], "ext_medae": ext_mets["medae"], "ext_evs": ext_mets["evs"],
-                })
-
-                # Track winner by CV RMSE (then simplicity)
-                if (best is None) or (cv_mets["rmse"] < best["cv_rmse"] - 1e-12) or \
-                   (abs(cv_mets["rmse"] - best["cv_rmse"]) <= 1e-12 and _is_simpler(model, hp, best["model"], best["hp"])):
-                    best = {
-                        "model": model, "methods": methods, "hp": hp, "hp_tag": hp_tag,
-                        "cv_rmse": cv_mets["rmse"], "ext_preds_s": y_pred_s, "ext_preds_std": y_pred_std,
-                    }
+        # ---------- Aggregate rows & pick global best ----------
+        rows = [r["row"] for r in results]
+        best = None
+        for r in results:
+            cand = r["best"]
+            if (best is None or
+                cand["cv_rmse"] < best["cv_rmse"] - 1e-12 or
+                (abs(cand["cv_rmse"] - best["cv_rmse"]) <= 1e-12 and
+                 _is_simpler(cand["model"], cand["hp"], best["model"], best["hp"]))):
+                best = cand
 
         # Save per-target consolidated CSV
-        df_all = pd.DataFrame(rows).sort_values(by=["cv_rmse", "model", "preprocessing", "hp"]).reset_index(drop=True)
+        df_all = pd.DataFrame(rows).sort_values(
+            by=["cv_rmse", "model", "preprocessing", "hp"]
+        ).reset_index(drop=True)
         csv_path = os.path.join(tgt_out, f"{tcol}__external_eval_SELECTED_HP_per_model.csv")
         df_all.to_csv(csv_path, index=False)
         print(f"[METRICS] wrote {csv_path}  ({len(df_all)} rows)")
@@ -837,3 +913,5 @@ if __name__ == "__main__":
         )
 
         print(f"[BEST] {nice}: {best['model']} + {methods_label} [{best['hp_tag']}] — CV_RMSE={best['cv_rmse']:.4f}")
+
+
