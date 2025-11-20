@@ -443,6 +443,7 @@ def nested_select_one(
     y_true_all, y_pred_all = [], []
     inner_trace = []
     fold_idx = 0
+    rmse_folds = []
 
     for tr_s, te_s in _iter_sample_folds(
         n_samples=N, n_splits=n_outer, seed=seed, strat_labels=strat_labels
@@ -573,11 +574,17 @@ def nested_select_one(
         m_pred = _sample_means_stds(Yhat, reps=reps_here)[0]
         y_true_all.append(m_true)
         y_pred_all.append(m_pred)
+        # per-fold RMSE at sample level
+        rmse_folds.append(
+            float(np.sqrt(mean_squared_error(m_true, m_pred)))
+        )
 
     # ---- Aggregate CV metrics across outer folds ----
     YT = np.concatenate(y_true_all).reshape(-1, 1)
     YP = np.concatenate(y_pred_all).reshape(-1, 1)
     mets = _metrics(YT, YP)
+    cv_mu_rmse = float(np.mean(rmse_folds))
+    cv_sd_rmse = float(np.std(rmse_folds))
 
     # ---- Choose modal HP across outer folds ----
     from collections import Counter
@@ -598,8 +605,11 @@ def nested_select_one(
         "methods": methods,
         "selected_hp": sel_hp,
         "cv_metrics": mets,
+        "cv_mu_rmse": cv_mu_rmse,
+        "cv_sd_rmse": cv_sd_rmse,
         "inner_trace": inner_trace,
     }
+
 def run_combo(
     model: str,
     methods: list,
@@ -639,6 +649,8 @@ def run_combo(
     )
     hp = sel["selected_hp"]
     cv_mets = sel["cv_metrics"]
+    cv_mu_rmse = sel["cv_mu_rmse"]
+    cv_sd_rmse = sel["cv_sd_rmse"]
 
     # Full TRAIN matrices for this target
     Xtr_all, Ytr_all, ytr_s, groups_tr_all, meta_tr_kept = rm_tr.build_xy(
@@ -657,12 +669,18 @@ def run_combo(
             reps=reps_here,
             n_splits=max(3, min(5, int(len(np.unique(groups_tr_all))))),
         )
+        # <-- EXACTLY HERE: capture the interval bounds -->
+        interval_bounds = (a, b)
+
         Xt_tr, Xt_te = _fit_transform_pair(Xtr_all[:, a:b], Xte_target[:, a:b], methods)
         mdl = PLSRegression(n_components=int(hp["n_components"]))
         mdl.fit(Xt_tr, Ytr_all)
         yhat_ext_spec = mdl.predict(Xt_te).ravel()
         hp_tag = f"C={hp['n_components']}__I={hp['num_intervals']}"
     else:
+        # <-- NON-iPLS: no single interval, so set None -->
+        interval_bounds = None
+
         Xt_tr, Xt_te = _fit_transform_pair(Xtr_all, Xte_target, methods)
         if model == "pls":
             mdl = PLSRegression(n_components=int(hp["n_components"]))
@@ -693,12 +711,21 @@ def run_combo(
         "model": model,
         "preprocessing": mlabel,
         "hp": hp_tag,
+        "interval_bounds": interval_bounds,   # <-- NEW FIELD HERE
         # CV metrics (selection basis)
-        "cv_rmse": cv_mets["rmse"], "cv_r2": cv_mets["r2"],
-        "cv_mae": cv_mets["mae"], "cv_medae": cv_mets["medae"], "cv_evs": cv_mets["evs"],
+        "cv_rmse": cv_mu_rmse,                  # mean over outer folds
+        "cv_rmse_pooled": cv_mets["rmse"],      # existing pooled metric (optional)
+        "cv_rmse_sd": cv_sd_rmse,
+        "cv_r2": cv_mets["r2"],
+        "cv_mae": cv_mets["mae"],
+        "cv_medae": cv_mets["medae"],
+        "cv_evs": cv_mets["evs"],
         # External metrics (report only; not used for selection)
-        "ext_rmse": ext_mets["rmse"], "ext_r2": ext_mets["r2"],
-        "ext_mae": ext_mets["mae"], "ext_medae": ext_mets["medae"], "ext_evs": ext_mets["evs"],
+        "ext_rmse": ext_mets["rmse"],
+        "ext_r2": ext_mets["r2"],
+        "ext_mae": ext_mets["mae"],
+        "ext_medae": ext_mets["medae"],
+        "ext_evs": ext_mets["evs"],
     }
 
     best_candidate = {
@@ -706,12 +733,15 @@ def run_combo(
         "methods": methods,
         "hp": hp,
         "hp_tag": hp_tag,
-        "cv_rmse": cv_mets["rmse"],
+        "cv_mu_rmse": cv_mu_rmse,
+        "cv_sd_rmse": cv_sd_rmse,
         "ext_preds_s": y_pred_s,
         "ext_preds_std": y_pred_std,
+        "interval_bounds": interval_bounds,   # optional, but handy if you want it later
     }
 
     return {"row": row, "best": best_candidate}
+
 
 # ====================== CLI runner ======================
 
@@ -861,16 +891,28 @@ if __name__ == "__main__":
             )
             results.append(res)
 
-        # ---------- Aggregate rows & pick global best ----------
+        # ---------- Aggregate rows & pick global best (1-SE rule across combos) ----------
         rows = [r["row"] for r in results]
+
+        # 1) Find the combo with the smallest mean CV RMSE
+        mu_values = [r["best"]["cv_mu_rmse"] for r in results]
+        best_idx = int(np.argmin(mu_values))
+        mu_best = mu_values[best_idx]
+        sd_best = results[best_idx]["best"]["cv_sd_rmse"]
+
+        threshold = mu_best + sd_best
+
+        # 2) Among all combos within 1-SE of the best, pick the simplest
         best = None
         for r in results:
             cand = r["best"]
-            if (best is None or
-                cand["cv_rmse"] < best["cv_rmse"] - 1e-12 or
-                (abs(cand["cv_rmse"] - best["cv_rmse"]) <= 1e-12 and
-                 _is_simpler(cand["model"], cand["hp"], best["model"], best["hp"]))):
-                best = cand
+            if cand["cv_mu_rmse"] <= threshold + 1e-12:
+                if (best is None or
+                    cand["cv_mu_rmse"] < best["cv_mu_rmse"] - 1e-12 or
+                    _is_simpler(cand["model"], cand["hp"], best["model"], best["hp"])):
+                    best = cand
+
+
 
         # Save per-target consolidated CSV
         df_all = pd.DataFrame(rows).sort_values(
@@ -913,6 +955,9 @@ if __name__ == "__main__":
             y_pred_sample_std=best["ext_preds_std"].reshape(-1,1),
         )
 
-        print(f"[BEST] {nice}: {best['model']} + {methods_label} [{best['hp_tag']}] — CV_RMSE={best['cv_rmse']:.4f}")
-
+        print(
+            f"[BEST] {nice}: {best['model']} + {methods_label} "
+            f"[{best['hp_tag']}] — CV_mu_RMSE={best['cv_mu_rmse']:.4f}, "
+            f"1-SE threshold={threshold:.4f}"
+        )
 
