@@ -625,7 +625,9 @@ def run_combo(
     pls_components: list,
     ipls_components: list,
     ipls_intervals: list,
+    wn_tr: np.ndarray,   # <--- ADD THIS
 ):
+
     """
     Run nested CV selection + full-train + external evaluation for a single
     (model, preprocessing) combo on one target. Designed to be picklable and
@@ -671,6 +673,8 @@ def run_combo(
         )
         # <-- EXACTLY HERE: capture the interval bounds -->
         interval_bounds = (a, b)
+        interval_wn_min = float(wn_tr[a])
+        interval_wn_max = float(wn_tr[b-1])
 
         Xt_tr, Xt_te = _fit_transform_pair(Xtr_all[:, a:b], Xte_target[:, a:b], methods)
         mdl = PLSRegression(n_components=int(hp["n_components"]))
@@ -680,9 +684,13 @@ def run_combo(
     else:
         # <-- NON-iPLS: no single interval, so set None -->
         interval_bounds = None
-
+        interval_wn_min = None
+        interval_wn_max = None
+    
         Xt_tr, Xt_te = _fit_transform_pair(Xtr_all, Xte_target, methods)
         if model == "pls":
+                
+
             mdl = PLSRegression(n_components=int(hp["n_components"]))
             mdl.fit(Xt_tr, Ytr_all)
             yhat_ext_spec = mdl.predict(Xt_te).ravel()
@@ -711,7 +719,9 @@ def run_combo(
         "model": model,
         "preprocessing": mlabel,
         "hp": hp_tag,
-        "interval_bounds": interval_bounds,   # <-- NEW FIELD HERE
+        "interval_bounds": interval_bounds,
+        "interval_wn_min": interval_wn_min,
+        "interval_wn_max": interval_wn_max,
         # CV metrics (selection basis)
         "cv_rmse": cv_mu_rmse,                  # mean over outer folds
         "cv_rmse_pooled": cv_mets["rmse"],      # existing pooled metric (optional)
@@ -728,6 +738,7 @@ def run_combo(
         "ext_evs": ext_mets["evs"],
     }
 
+
     best_candidate = {
         "model": model,
         "methods": methods,
@@ -737,8 +748,11 @@ def run_combo(
         "cv_sd_rmse": cv_sd_rmse,
         "ext_preds_s": y_pred_s,
         "ext_preds_std": y_pred_std,
-        "interval_bounds": interval_bounds,   # optional, but handy if you want it later
+        "interval_bounds": interval_bounds,
+        "interval_wn_min": interval_wn_min,
+        "interval_wn_max": interval_wn_max,
     }
+
 
     return {"row": row, "best": best_candidate}
 
@@ -877,9 +891,11 @@ if __name__ == "__main__":
                 rm_tr, Xte_target, yte,
                 RF_GRID, ACFNN_GRID,
                 PLS_COMPONENTS, IPLS_COMPONENTS, IPLS_INTERVALS,
+                wn_tr,
             )
             for (model, methods) in combos_parallel
         )
+
 
         # Run AC-FNN combos sequentially (Torch + Windows is touchy with multiprocessing)
         for methods in PREPROCESS_GRID:
@@ -888,8 +904,10 @@ if __name__ == "__main__":
                 rm_tr, Xte_target, yte,
                 RF_GRID, ACFNN_GRID,
                 PLS_COMPONENTS, IPLS_COMPONENTS, IPLS_INTERVALS,
+                wn_tr,
             )
             results.append(res)
+
 
         # ---------- Aggregate rows & pick global best (1-SE rule across combos) ----------
         rows = [r["row"] for r in results]
