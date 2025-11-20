@@ -275,7 +275,443 @@ class GlobalGrouped:
         groups = _groups_for_spectra(N, reps=self.reps)               # (reps*N,)
 
         return X_all, Y, y_s.ravel(), groups, meta0
+def _is_simpler(model_a, hp_a, model_b, hp_b):
+    order = {"pls": 0, "ipls": 1, "rf": 2, "acfnn": 3}
+    ma, mb = model_a.lower(), model_b.lower()
+    if ma != mb:
+        return order.get(ma, 99) < order.get(mb, 99)
+    if ma == "pls":
+        return int(hp_a["n_components"]) < int(hp_b["n_components"])
+    if ma == "ipls":
+        a = (int(hp_a["num_intervals"]), int(hp_a["n_components"]))
+        b = (int(hp_b["num_intervals"]), int(hp_b["n_components"]))
+        return a < b
+    if ma == "rf":
+        return int(hp_a["n_estimators"]) < int(hp_b["n_estimators"])
+    if ma == "acfnn":
+        ha = hp_a.get("hidden_layer_sizes", (128, 64))
+        hb = hp_b.get("hidden_layer_sizes", (128, 64))
+        return (sum(ha), len(ha)) < (sum(hb), len(hb))
+    return False
+# ---------------------- Fold-making helpers (sample-level) ----------------------
 
+def _iter_sample_folds(
+    n_samples: int,
+    n_splits: int,
+    seed: int,
+    strat_labels: np.ndarray | None = None,
+):
+    """
+    Yield (train_sample_ids, test_sample_ids) at the SAMPLE level.
+    - If strat_labels provided and valid for stratification, use StratifiedKFold(shuffle=True).
+    - Else use KFold(shuffle=True).
+    """
+    sample_ids = np.arange(n_samples, dtype=int)
+
+    # Decide whether stratification is feasible (>= n_splits per class, ≥2 classes)
+    use_strat = False
+    if strat_labels is not None:
+        labs = np.asarray(strat_labels)
+        if labs.shape[0] == n_samples and len(np.unique(labs)) >= 2:
+            counts = {c: (labs == c).sum() for c in np.unique(labs)}
+            if min(counts.values()) >= n_splits:
+                use_strat = True
+
+    if use_strat:
+        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+        for tr, te in skf.split(sample_ids, strat_labels):
+            yield sample_ids[tr], sample_ids[te]
+    else:
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+        for tr, te in kf.split(sample_ids):
+            yield sample_ids[tr], sample_ids[te]
+
+
+def _warn_fold_balance(
+    fold_id: int,
+    tr_ids: np.ndarray,
+    te_ids: np.ndarray,
+    strat_labels_full: np.ndarray | None,
+    tol_frac: float = 0.20,    # 20% absolute deviation allowed
+    min_test: int = 4,         # tiny fold warning
+):
+    """
+    Emit light warnings about fold size and class balance drift (when labels present).
+    """
+    if te_ids.size < min_test:
+        print(f"[WARN] outer fold {fold_id}: test fold very small (n={te_ids.size}).")
+
+    if strat_labels_full is None:
+        return
+
+    labs = strat_labels_full
+    glob = {c: (labs == c).mean() for c in np.unique(labs)}
+    te = {c: (labs[te_ids] == c).mean() for c in np.unique(labs)}
+
+    for c in glob:
+        if abs(te[c] - glob[c]) > tol_frac:
+            print(
+                f"[WARN] outer fold {fold_id}: class '{c}' proportion drift "
+                f"({te[c]:.2f} vs global {glob[c]:.2f})."
+            )
+
+
+def _expand_sample_ids_to_spectra(mask_sample_ids: np.ndarray, reps: int) -> np.ndarray:
+    """
+    Convert a boolean mask or an array of sample IDs into a boolean mask for the
+    (reps * N)-long spectra axis.
+    """
+    if mask_sample_ids.dtype == bool:
+        return np.repeat(mask_sample_ids, reps)
+    # it's an array of sample indices
+    N = int(mask_sample_ids.max()) + 1 if mask_sample_ids.size else 0
+    m = np.zeros(N, dtype=bool)
+    m[mask_sample_ids] = True
+    return np.repeat(m, reps)
+
+
+def _spectral_groups_from_mask(mask_bool: np.ndarray, reps: int, N: int) -> np.ndarray:
+    """
+    Build group ids aligned to X[mask_bool] row order.
+    Each row corresponds to a spectrum; we map that back to its sample id and
+    then remap sample ids to compact 0..(n_unique-1) in appearance order.
+    """
+    # sample id for every spectrum in the full design (0..N-1 repeated 'reps' times)
+    spec_sample_ids_full = np.repeat(np.arange(N, dtype=int), reps)
+    # restrict to the selected rows; this matches X[mask_bool]
+    spec_sample_ids_sel = spec_sample_ids_full[mask_bool]
+    # compact mapping
+    _, inv = np.unique(spec_sample_ids_sel, return_inverse=True)
+    return inv
+
+
+# ---------------------- Nested CV selector (serial, sample-grouped) ----------------------
+
+def nested_select_one(
+    model_name: str,
+    methods: list,
+    target_col: str,
+    n_outer: int,
+    n_inner: int,
+    seed: int,
+    rm_tr: GlobalGrouped,
+    include_types: tuple,
+    pls_components: list,
+    ipls_components: list,
+    ipls_intervals: list,
+    rf_grid: list,
+    acfnn_grid: list,
+):
+    """
+    Group-aware nested CV on TRAIN to choose HP via 1-SE rule toward simplicity.
+    SERIAL implementation (no inner Parallel) so it can be safely used inside
+    process-based outer parallelism.
+
+    Returns: dict with selection, CV metrics, and per-fold chosen HPs.
+    """
+    # ---- Build TRAIN matrices at the current target ----
+    X, Y, y_s, groups, meta_kept = rm_tr.build_xy(target_col, include_types=include_types)
+    N = len(meta_kept)
+    reps_here = rm_tr.reps
+
+    spec_sample_ids_full = np.repeat(np.arange(N, dtype=int), reps_here)
+
+    # Build stratification labels if controls are present
+    strat_labels = None
+    if "Type" in meta_kept.columns:
+        if meta_kept["Type"].isin(["DM1", "Control"]).any():
+            strat_labels = (meta_kept["Type"].to_numpy() == "DM1").astype(int)
+
+    # ---- Define candidate HP lists per model ----
+    if model_name == "pls":
+        hp_candidates = [{"n_components": int(c)} for c in pls_components]
+    elif model_name == "ipls":
+        hp_candidates = [
+            {"n_components": int(c), "num_intervals": int(I)}
+            for c in ipls_components
+            for I in ipls_intervals
+        ]
+    elif model_name == "rf":
+        hp_candidates = rf_grid
+    elif model_name == "acfnn":
+        hp_candidates = acfnn_grid
+    else:
+        raise ValueError(model_name)
+
+    # ---- OUTER folds ----
+    n_outer = min(n_outer, N)
+    y_true_all, y_pred_all = [], []
+    inner_trace = []
+    fold_idx = 0
+
+    for tr_s, te_s in _iter_sample_folds(
+        n_samples=N, n_splits=n_outer, seed=seed, strat_labels=strat_labels
+    ):
+        fold_idx += 1
+
+        _warn_fold_balance(
+            fold_id=fold_idx, tr_ids=tr_s, te_ids=te_s,
+            strat_labels_full=strat_labels, tol_frac=0.20, min_test=4
+        )
+
+        mask_tr = np.isin(np.repeat(np.arange(N), reps_here), tr_s)
+        mask_te = np.isin(np.repeat(np.arange(N), reps_here), te_s)
+
+        Xtr, Xte = X[mask_tr], X[mask_te]
+        Ytr, Yte = Y[mask_tr], Y[mask_te]
+
+        # ---- INNER folds on TRAIN ----
+        n_inner_eff = min(n_inner, max(2, len(np.unique(tr_s))))
+        strat_labels_tr = strat_labels[tr_s] if strat_labels is not None else None
+
+        def score_hp(hp):
+            mse_folds = []
+            for itr_s, iva_s in _iter_sample_folds(
+                n_samples=len(tr_s),
+                n_splits=n_inner_eff,
+                seed=seed + 17,
+                strat_labels=strat_labels_tr
+            ):
+                inner_tr_samples = tr_s[itr_s]
+                inner_va_samples = tr_s[iva_s]
+
+                m_tr = np.isin(np.repeat(np.arange(N), reps_here), inner_tr_samples)
+                m_va = np.isin(np.repeat(np.arange(N), reps_here), inner_va_samples)
+
+                Xitr, Xiva = X[m_tr], X[m_va]
+                Yitr, Yiva = Y[m_tr], Y[m_va]
+
+                if model_name == "ipls":
+                    groups_tr_inner = spec_sample_ids_full[m_tr]
+                    (a, b), _ = _best_interval_grouped(
+                        X_tr=Xitr, Y_tr=Yitr,
+                        groups_tr=groups_tr_inner,
+                        preprocess_methods=methods,
+                        n_components=int(hp["n_components"]),
+                        num_intervals=int(hp["num_intervals"]),
+                        reps=reps_here,
+                        n_splits=max(3, min(5, len(inner_tr_samples))),
+                    )
+                    Xt_tr, Xt_va = _fit_transform_pair(Xitr[:, a:b], Xiva[:, a:b], methods)
+                    mdl = PLSRegression(n_components=int(hp["n_components"]))
+                    mdl.fit(Xt_tr, Yitr)
+                    Yhat = mdl.predict(Xt_va)
+                else:
+                    Xt_tr, Xt_va = _fit_transform_pair(Xitr, Xiva, methods)
+                    if model_name == "pls":
+                        mdl = PLSRegression(n_components=int(hp["n_components"]))
+                        mdl.fit(Xt_tr, Yitr)
+                        Yhat = mdl.predict(Xt_va)
+                    elif model_name == "rf":
+                        rf = RandomForestRegressor(**hp, random_state=seed, n_jobs=1)
+                        rf.fit(Xt_tr, Yitr.ravel())
+                        Yhat = rf.predict(Xt_va).reshape(-1, 1)
+                    elif model_name == "acfnn":
+                        mlp = TorchRegressor(random_state=seed, **hp)
+                        mlp.fit(Xt_tr, Yitr.ravel())
+                        Yhat = mlp.predict(Xt_va).reshape(-1, 1)
+
+                m_true = _sample_means_stds(Yiva, reps=reps_here)[0]
+                m_pred = _sample_means_stds(Yhat, reps=reps_here)[0]
+                mse_folds.append(mean_squared_error(m_true, m_pred))
+
+            return float(np.mean(mse_folds)), float(np.std(mse_folds))
+
+        # SERIAL HP evaluation
+        hp_stats = [score_hp(hp) for hp in hp_candidates]
+
+        mus = [m for (m, s) in hp_stats]
+        best_ix = int(np.argmin(mus))
+        mu_best, sd_best = hp_stats[best_ix]
+        pick = hp_candidates[best_ix]
+
+        # 1-SE toward simplicity
+        for h, (m, s) in zip(hp_candidates, hp_stats):
+            if m <= mu_best + sd_best + 1e-12:
+                if _is_simpler(model_name, h, model_name, pick):
+                    pick = h
+
+        inner_trace.append({
+            "outer_fold": fold_idx,
+            "selected_hp": pick,
+            "mu_best": float(mu_best),
+            "sd_best": float(sd_best),
+        })
+
+        # ---- Outer evaluation on this fold ----
+        if model_name == "ipls":
+            groups_tr_outer = spec_sample_ids_full[mask_tr]
+            (a, b), _ = _best_interval_grouped(
+                X_tr=Xtr, Y_tr=Ytr,
+                groups_tr=groups_tr_outer,
+                preprocess_methods=methods,
+                n_components=int(pick["n_components"]),
+                num_intervals=int(pick["num_intervals"]),
+                reps=reps_here,
+                n_splits=max(3, min(5, len(tr_s))),
+            )
+            Xt_tr, Xt_te = _fit_transform_pair(Xtr[:, a:b], Xte[:, a:b], methods)
+            mdl = PLSRegression(n_components=int(pick["n_components"]))
+            mdl.fit(Xt_tr, Ytr)
+            Yhat = mdl.predict(Xt_te)
+        else:
+            Xt_tr, Xt_te = _fit_transform_pair(Xtr, Xte, methods)
+            if model_name == "pls":
+                mdl = PLSRegression(n_components=int(pick["n_components"]))
+                mdl.fit(Xt_tr, Ytr)
+                Yhat = mdl.predict(Xt_te)
+            elif model_name == "rf":
+                rf = RandomForestRegressor(**pick, random_state=seed, n_jobs=-1)
+                rf.fit(Xt_tr, Ytr.ravel())
+                Yhat = rf.predict(Xt_te).reshape(-1, 1)
+            elif model_name == "acfnn":
+                mlp = TorchRegressor(random_state=seed, **pick)
+                mlp.fit(Xt_tr, Ytr.ravel())
+                Yhat = mlp.predict(Xt_te).reshape(-1, 1)
+
+        m_true = _sample_means_stds(Yte, reps=reps_here)[0]
+        m_pred = _sample_means_stds(Yhat, reps=reps_here)[0]
+        y_true_all.append(m_true)
+        y_pred_all.append(m_pred)
+
+    # ---- Aggregate CV metrics across outer folds ----
+    YT = np.concatenate(y_true_all).reshape(-1, 1)
+    YP = np.concatenate(y_pred_all).reshape(-1, 1)
+    mets = _metrics(YT, YP)
+
+    # ---- Choose modal HP across outer folds ----
+    from collections import Counter
+
+    def _hp_key(hp):
+        if model_name == "pls":   return f"pls|C={hp['n_components']}"
+        if model_name == "rf":    return f"rf|{_rf_tag(hp)}"
+        if model_name == "acfnn": return f"ac|{_ac_tag(hp)}"
+        if model_name == "ipls":  return f"ipls|C={hp['n_components']}__I={hp['num_intervals']}"
+        return str(hp)
+
+    counts = Counter([_hp_key(r["selected_hp"]) for r in inner_trace])
+    modal_key, _ = counts.most_common(1)[0]
+    sel_hp = next(r["selected_hp"] for r in inner_trace if _hp_key(r["selected_hp"]) == modal_key)
+
+    return {
+        "model": model_name,
+        "methods": methods,
+        "selected_hp": sel_hp,
+        "cv_metrics": mets,
+        "inner_trace": inner_trace,
+    }
+def run_combo(
+    model: str,
+    methods: list,
+    target_name: str,
+    target_col: str,
+    args,
+    include_types: tuple,
+    rm_tr: GlobalGrouped,
+    Xte_target: np.ndarray,
+    yte_target: np.ndarray,
+    rf_grid: list,
+    acfnn_grid: list,
+    pls_components: list,
+    ipls_components: list,
+    ipls_intervals: list,
+):
+    """
+    Run nested CV selection + full-train + external evaluation for a single
+    (model, preprocessing) combo on one target. Designed to be picklable and
+    used inside joblib.Parallel(..., backend='loky').
+    """
+    # Nested selection on TRAIN only
+    sel = nested_select_one(
+        model_name=model,
+        methods=methods,
+        target_col=target_col,
+        n_outer=args.outer_folds,
+        n_inner=args.inner_folds,
+        seed=args.random_state,
+        rm_tr=rm_tr,
+        include_types=include_types,
+        pls_components=pls_components,
+        ipls_components=ipls_components,
+        ipls_intervals=ipls_intervals,
+        rf_grid=rf_grid,
+        acfnn_grid=acfnn_grid,
+    )
+    hp = sel["selected_hp"]
+    cv_mets = sel["cv_metrics"]
+
+    # Full TRAIN matrices for this target
+    Xtr_all, Ytr_all, ytr_s, groups_tr_all, meta_tr_kept = rm_tr.build_xy(
+        target_col, include_types=include_types
+    )
+
+    reps_here = rm_tr.reps
+
+    # Final training on FULL TRAIN + external evaluation
+    if model == "ipls":
+        (a, b), _ = _best_interval_grouped(
+            X_tr=Xtr_all, Y_tr=Ytr_all, groups_tr=groups_tr_all,
+            preprocess_methods=methods,
+            n_components=int(hp["n_components"]),
+            num_intervals=int(hp["num_intervals"]),
+            reps=reps_here,
+            n_splits=max(3, min(5, int(len(np.unique(groups_tr_all))))),
+        )
+        Xt_tr, Xt_te = _fit_transform_pair(Xtr_all[:, a:b], Xte_target[:, a:b], methods)
+        mdl = PLSRegression(n_components=int(hp["n_components"]))
+        mdl.fit(Xt_tr, Ytr_all)
+        yhat_ext_spec = mdl.predict(Xt_te).ravel()
+        hp_tag = f"C={hp['n_components']}__I={hp['num_intervals']}"
+    else:
+        Xt_tr, Xt_te = _fit_transform_pair(Xtr_all, Xte_target, methods)
+        if model == "pls":
+            mdl = PLSRegression(n_components=int(hp["n_components"]))
+            mdl.fit(Xt_tr, Ytr_all)
+            yhat_ext_spec = mdl.predict(Xt_te).ravel()
+            hp_tag = f"C={hp['n_components']}"
+        elif model == "rf":
+            rf = RandomForestRegressor(**hp, random_state=args.random_state, n_jobs=-1)
+            rf.fit(Xt_tr, Ytr_all.ravel())
+            yhat_ext_spec = rf.predict(Xt_te)
+            hp_tag = _rf_tag(hp)
+        elif model == "acfnn":
+            mlp = TorchRegressor(random_state=args.random_state, **hp)
+            mlp.fit(Xt_tr, Ytr_all.ravel())
+            yhat_ext_spec = mlp.predict(Xt_te).ravel()
+            hp_tag = _ac_tag(hp)
+        else:
+            raise ValueError(model)
+
+    # Collapse to sample level and compute external metrics
+    y_pred_s, y_pred_std = _sample_means_stds(yhat_ext_spec, reps=reps_here)
+    ext_mets = _metrics(yte_target, y_pred_s)
+
+    mlabel = " + ".join(methods) if methods else "No Preprocessing"
+
+    row = {
+        "target": target_col,
+        "model": model,
+        "preprocessing": mlabel,
+        "hp": hp_tag,
+        # CV metrics (selection basis)
+        "cv_rmse": cv_mets["rmse"], "cv_r2": cv_mets["r2"],
+        "cv_mae": cv_mets["mae"], "cv_medae": cv_mets["medae"], "cv_evs": cv_mets["evs"],
+        # External metrics (report only; not used for selection)
+        "ext_rmse": ext_mets["rmse"], "ext_r2": ext_mets["r2"],
+        "ext_mae": ext_mets["mae"], "ext_medae": ext_mets["medae"], "ext_evs": ext_mets["evs"],
+    }
+
+    best_candidate = {
+        "model": model,
+        "methods": methods,
+        "hp": hp,
+        "hp_tag": hp_tag,
+        "cv_rmse": cv_mets["rmse"],
+        "ext_preds_s": y_pred_s,
+        "ext_preds_std": y_pred_std,
+    }
+
+    return {"row": row, "best": best_candidate}
 
 # ====================== CLI runner ======================
 
@@ -366,447 +802,12 @@ if __name__ == "__main__":
         {"hidden_layer_sizes": (256,256,128),   "activation":"relu", "alpha":1e-5, "learning_rate_init":1e-3, "batch_size":128, "max_iter":300},
     ]
 
-    def _is_simpler(model_a, hp_a, model_b, hp_b):
-        order = {"pls": 0, "ipls": 1, "rf": 2, "acfnn": 3}
-        ma, mb = model_a.lower(), model_b.lower()
-        if ma != mb:
-            return order.get(ma, 99) < order.get(mb, 99)
-        if ma == "pls":
-            return int(hp_a["n_components"]) < int(hp_b["n_components"])
-        if ma == "ipls":
-            a = (int(hp_a["num_intervals"]), int(hp_a["n_components"]))
-            b = (int(hp_b["num_intervals"]), int(hp_b["n_components"]))
-            return a < b
-        if ma == "rf":
-            return int(hp_a["n_estimators"]) < int(hp_b["n_estimators"])
-        if ma == "acfnn":
-            ha = hp_a.get("hidden_layer_sizes", (128, 64))
-            hb = hp_b.get("hidden_layer_sizes", (128, 64))
-            return (sum(ha), len(ha)) < (sum(hb), len(hb))
-        return False
+
 
     # ---------- core ----------
     rm_tr = GlobalGrouped(all_spectra=all_tr, meta=meta_tr, reps=REPS)
     Xte_full = all_te.T  # (reps*N_test, features)
-    # ---------------------- Fold-making helpers (sample-level) ----------------------
-    
-    def _iter_sample_folds(
-        n_samples: int,
-        n_splits: int,
-        seed: int,
-        strat_labels: np.ndarray | None = None,
-    ):
-        """
-        Yield (train_sample_ids, test_sample_ids) at the SAMPLE level.
-        - If strat_labels provided and valid for stratification, use StratifiedKFold(shuffle=True).
-        - Else use KFold(shuffle=True).
-        """
-        sample_ids = np.arange(n_samples, dtype=int)
-    
-        # Decide whether stratification is feasible (>= n_splits per class, ≥2 classes)
-        use_strat = False
-        if strat_labels is not None:
-            labs = np.asarray(strat_labels)
-            if labs.shape[0] == n_samples and len(np.unique(labs)) >= 2:
-                counts = {c: (labs == c).sum() for c in np.unique(labs)}
-                if min(counts.values()) >= n_splits:
-                    use_strat = True
-    
-        if use_strat:
-            skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
-            for tr, te in skf.split(sample_ids, strat_labels):
-                yield sample_ids[tr], sample_ids[te]
-        else:
-            kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
-            for tr, te in kf.split(sample_ids):
-                yield sample_ids[tr], sample_ids[te]
-    
-    
-    def _warn_fold_balance(
-        fold_id: int,
-        tr_ids: np.ndarray,
-        te_ids: np.ndarray,
-        strat_labels_full: np.ndarray | None,
-        tol_frac: float = 0.20,    # 20% absolute deviation allowed
-        min_test: int = 4,         # tiny fold warning
-    ):
-        """
-        Emit light warnings about fold size and class balance drift (when labels present).
-        """
-        if te_ids.size < min_test:
-            print(f"[WARN] outer fold {fold_id}: test fold very small (n={te_ids.size}).")
-    
-        if strat_labels_full is None:
-            return
-    
-        labs = strat_labels_full
-        glob = {c: (labs == c).mean() for c in np.unique(labs)}
-        te = {c: (labs[te_ids] == c).mean() for c in np.unique(labs)}
-    
-        for c in glob:
-            if abs(te[c] - glob[c]) > tol_frac:
-                print(
-                    f"[WARN] outer fold {fold_id}: class '{c}' proportion drift "
-                    f"({te[c]:.2f} vs global {glob[c]:.2f})."
-                )
-    
-    
-    def _expand_sample_ids_to_spectra(mask_sample_ids: np.ndarray, reps: int) -> np.ndarray:
-        """
-        Convert a boolean mask or an array of sample IDs into a boolean mask for the
-        (reps * N)-long spectra axis.
-        """
-        if mask_sample_ids.dtype == bool:
-            return np.repeat(mask_sample_ids, reps)
-        # it's an array of sample indices
-        N = int(mask_sample_ids.max()) + 1 if mask_sample_ids.size else 0
-        m = np.zeros(N, dtype=bool)
-        m[mask_sample_ids] = True
-        return np.repeat(m, reps)
-    
-    
-    def _spectral_groups_from_mask(mask_bool: np.ndarray, reps: int, N: int) -> np.ndarray:
-        """
-        Build group ids aligned to X[mask_bool] row order.
-        Each row corresponds to a spectrum; we map that back to its sample id and
-        then remap sample ids to compact 0..(n_unique-1) in appearance order.
-        """
-        # sample id for every spectrum in the full design (0..N-1 repeated 'reps' times)
-        spec_sample_ids_full = np.repeat(np.arange(N, dtype=int), reps)
-        # restrict to the selected rows; this matches X[mask_bool]
-        spec_sample_ids_sel = spec_sample_ids_full[mask_bool]
-        # compact mapping
-        _, inv = np.unique(spec_sample_ids_sel, return_inverse=True)
-        return inv
-    
-    
-    # ---------------------- Nested CV selector (serial, sample-grouped) ----------------------
-    
-    def nested_select_one(
-        model_name: str,
-        methods: list,
-        target_col: str,
-        n_outer: int,
-        n_inner: int,
-        seed: int,
-        rm_tr: GlobalGrouped,
-        include_types: tuple,
-        pls_components: list,
-        ipls_components: list,
-        ipls_intervals: list,
-        rf_grid: list,
-        acfnn_grid: list,
-    ):
-        """
-        Group-aware nested CV on TRAIN to choose HP via 1-SE rule toward simplicity.
-        SERIAL implementation (no inner Parallel) so it can be safely used inside
-        process-based outer parallelism.
-    
-        Returns: dict with selection, CV metrics, and per-fold chosen HPs.
-        """
-        # ---- Build TRAIN matrices at the current target ----
-        X, Y, y_s, groups, meta_kept = rm_tr.build_xy(target_col, include_types=include_types)
-        N = len(meta_kept)
-        reps_here = rm_tr.reps
-    
-        spec_sample_ids_full = np.repeat(np.arange(N, dtype=int), reps_here)
-    
-        # Build stratification labels if controls are present
-        strat_labels = None
-        if "Type" in meta_kept.columns:
-            if meta_kept["Type"].isin(["DM1", "Control"]).any():
-                strat_labels = (meta_kept["Type"].to_numpy() == "DM1").astype(int)
-    
-        # ---- Define candidate HP lists per model ----
-        if model_name == "pls":
-            hp_candidates = [{"n_components": int(c)} for c in pls_components]
-        elif model_name == "ipls":
-            hp_candidates = [
-                {"n_components": int(c), "num_intervals": int(I)}
-                for c in ipls_components
-                for I in ipls_intervals
-            ]
-        elif model_name == "rf":
-            hp_candidates = rf_grid
-        elif model_name == "acfnn":
-            hp_candidates = acfnn_grid
-        else:
-            raise ValueError(model_name)
-    
-        # ---- OUTER folds ----
-        n_outer = min(n_outer, N)
-        y_true_all, y_pred_all = [], []
-        inner_trace = []
-        fold_idx = 0
-    
-        for tr_s, te_s in _iter_sample_folds(
-            n_samples=N, n_splits=n_outer, seed=seed, strat_labels=strat_labels
-        ):
-            fold_idx += 1
-    
-            _warn_fold_balance(
-                fold_id=fold_idx, tr_ids=tr_s, te_ids=te_s,
-                strat_labels_full=strat_labels, tol_frac=0.20, min_test=4
-            )
-    
-            mask_tr = np.isin(np.repeat(np.arange(N), reps_here), tr_s)
-            mask_te = np.isin(np.repeat(np.arange(N), reps_here), te_s)
-    
-            Xtr, Xte = X[mask_tr], X[mask_te]
-            Ytr, Yte = Y[mask_tr], Y[mask_te]
-    
-            # ---- INNER folds on TRAIN ----
-            n_inner_eff = min(n_inner, max(2, len(np.unique(tr_s))))
-            strat_labels_tr = strat_labels[tr_s] if strat_labels is not None else None
-    
-            def score_hp(hp):
-                mse_folds = []
-                for itr_s, iva_s in _iter_sample_folds(
-                    n_samples=len(tr_s),
-                    n_splits=n_inner_eff,
-                    seed=seed + 17,
-                    strat_labels=strat_labels_tr
-                ):
-                    inner_tr_samples = tr_s[itr_s]
-                    inner_va_samples = tr_s[iva_s]
-    
-                    m_tr = np.isin(np.repeat(np.arange(N), reps_here), inner_tr_samples)
-                    m_va = np.isin(np.repeat(np.arange(N), reps_here), inner_va_samples)
-    
-                    Xitr, Xiva = X[m_tr], X[m_va]
-                    Yitr, Yiva = Y[m_tr], Y[m_va]
-    
-                    if model_name == "ipls":
-                        groups_tr_inner = spec_sample_ids_full[m_tr]
-                        (a, b), _ = _best_interval_grouped(
-                            X_tr=Xitr, Y_tr=Yitr,
-                            groups_tr=groups_tr_inner,
-                            preprocess_methods=methods,
-                            n_components=int(hp["n_components"]),
-                            num_intervals=int(hp["num_intervals"]),
-                            reps=reps_here,
-                            n_splits=max(3, min(5, len(inner_tr_samples))),
-                        )
-                        Xt_tr, Xt_va = _fit_transform_pair(Xitr[:, a:b], Xiva[:, a:b], methods)
-                        mdl = PLSRegression(n_components=int(hp["n_components"]))
-                        mdl.fit(Xt_tr, Yitr)
-                        Yhat = mdl.predict(Xt_va)
-                    else:
-                        Xt_tr, Xt_va = _fit_transform_pair(Xitr, Xiva, methods)
-                        if model_name == "pls":
-                            mdl = PLSRegression(n_components=int(hp["n_components"]))
-                            mdl.fit(Xt_tr, Yitr)
-                            Yhat = mdl.predict(Xt_va)
-                        elif model_name == "rf":
-                            rf = RandomForestRegressor(**hp, random_state=seed, n_jobs=1)
-                            rf.fit(Xt_tr, Yitr.ravel())
-                            Yhat = rf.predict(Xt_va).reshape(-1, 1)
-                        elif model_name == "acfnn":
-                            mlp = TorchRegressor(random_state=seed, **hp)
-                            mlp.fit(Xt_tr, Yitr.ravel())
-                            Yhat = mlp.predict(Xt_va).reshape(-1, 1)
-    
-                    m_true = _sample_means_stds(Yiva, reps=reps_here)[0]
-                    m_pred = _sample_means_stds(Yhat, reps=reps_here)[0]
-                    mse_folds.append(mean_squared_error(m_true, m_pred))
-    
-                return float(np.mean(mse_folds)), float(np.std(mse_folds))
-    
-            # SERIAL HP evaluation
-            hp_stats = [score_hp(hp) for hp in hp_candidates]
-    
-            mus = [m for (m, s) in hp_stats]
-            best_ix = int(np.argmin(mus))
-            mu_best, sd_best = hp_stats[best_ix]
-            pick = hp_candidates[best_ix]
-    
-            # 1-SE toward simplicity
-            for h, (m, s) in zip(hp_candidates, hp_stats):
-                if m <= mu_best + sd_best + 1e-12:
-                    if _is_simpler(model_name, h, model_name, pick):
-                        pick = h
-    
-            inner_trace.append({
-                "outer_fold": fold_idx,
-                "selected_hp": pick,
-                "mu_best": float(mu_best),
-                "sd_best": float(sd_best),
-            })
-    
-            # ---- Outer evaluation on this fold ----
-            if model_name == "ipls":
-                groups_tr_outer = spec_sample_ids_full[mask_tr]
-                (a, b), _ = _best_interval_grouped(
-                    X_tr=Xtr, Y_tr=Ytr,
-                    groups_tr=groups_tr_outer,
-                    preprocess_methods=methods,
-                    n_components=int(pick["n_components"]),
-                    num_intervals=int(pick["num_intervals"]),
-                    reps=reps_here,
-                    n_splits=max(3, min(5, len(tr_s))),
-                )
-                Xt_tr, Xt_te = _fit_transform_pair(Xtr[:, a:b], Xte[:, a:b], methods)
-                mdl = PLSRegression(n_components=int(pick["n_components"]))
-                mdl.fit(Xt_tr, Ytr)
-                Yhat = mdl.predict(Xt_te)
-            else:
-                Xt_tr, Xt_te = _fit_transform_pair(Xtr, Xte, methods)
-                if model_name == "pls":
-                    mdl = PLSRegression(n_components=int(pick["n_components"]))
-                    mdl.fit(Xt_tr, Ytr)
-                    Yhat = mdl.predict(Xt_te)
-                elif model_name == "rf":
-                    rf = RandomForestRegressor(**pick, random_state=seed, n_jobs=-1)
-                    rf.fit(Xt_tr, Ytr.ravel())
-                    Yhat = rf.predict(Xt_te).reshape(-1, 1)
-                elif model_name == "acfnn":
-                    mlp = TorchRegressor(random_state=seed, **pick)
-                    mlp.fit(Xt_tr, Ytr.ravel())
-                    Yhat = mlp.predict(Xt_te).reshape(-1, 1)
-    
-            m_true = _sample_means_stds(Yte, reps=reps_here)[0]
-            m_pred = _sample_means_stds(Yhat, reps=reps_here)[0]
-            y_true_all.append(m_true)
-            y_pred_all.append(m_pred)
-    
-        # ---- Aggregate CV metrics across outer folds ----
-        YT = np.concatenate(y_true_all).reshape(-1, 1)
-        YP = np.concatenate(y_pred_all).reshape(-1, 1)
-        mets = _metrics(YT, YP)
-    
-        # ---- Choose modal HP across outer folds ----
-        from collections import Counter
-    
-        def _hp_key(hp):
-            if model_name == "pls":   return f"pls|C={hp['n_components']}"
-            if model_name == "rf":    return f"rf|{_rf_tag(hp)}"
-            if model_name == "acfnn": return f"ac|{_ac_tag(hp)}"
-            if model_name == "ipls":  return f"ipls|C={hp['n_components']}__I={hp['num_intervals']}"
-            return str(hp)
-    
-        counts = Counter([_hp_key(r["selected_hp"]) for r in inner_trace])
-        modal_key, _ = counts.most_common(1)[0]
-        sel_hp = next(r["selected_hp"] for r in inner_trace if _hp_key(r["selected_hp"]) == modal_key)
-    
-        return {
-            "model": model_name,
-            "methods": methods,
-            "selected_hp": sel_hp,
-            "cv_metrics": mets,
-            "inner_trace": inner_trace,
-        }
-    def run_combo(
-        model: str,
-        methods: list,
-        target_name: str,
-        target_col: str,
-        args,
-        include_types: tuple,
-        rm_tr: GlobalGrouped,
-        Xte_target: np.ndarray,
-        yte_target: np.ndarray,
-        rf_grid: list,
-        acfnn_grid: list,
-        pls_components: list,
-        ipls_components: list,
-        ipls_intervals: list,
-    ):
-        """
-        Run nested CV selection + full-train + external evaluation for a single
-        (model, preprocessing) combo on one target. Designed to be picklable and
-        used inside joblib.Parallel(..., backend='loky').
-        """
-        # Nested selection on TRAIN only
-        sel = nested_select_one(
-            model_name=model,
-            methods=methods,
-            target_col=target_col,
-            n_outer=args.outer_folds,
-            n_inner=args.inner_folds,
-            seed=args.random_state,
-            rm_tr=rm_tr,
-            include_types=include_types,
-            pls_components=pls_components,
-            ipls_components=ipls_components,
-            ipls_intervals=ipls_intervals,
-            rf_grid=rf_grid,
-            acfnn_grid=acfnn_grid,
-        )
-        hp = sel["selected_hp"]
-        cv_mets = sel["cv_metrics"]
-    
-        # Full TRAIN matrices for this target
-        Xtr_all, Ytr_all, ytr_s, groups_tr_all, meta_tr_kept = rm_tr.build_xy(
-            target_col, include_types=include_types
-        )
-    
-        reps_here = rm_tr.reps
-    
-        # Final training on FULL TRAIN + external evaluation
-        if model == "ipls":
-            (a, b), _ = _best_interval_grouped(
-                X_tr=Xtr_all, Y_tr=Ytr_all, groups_tr=groups_tr_all,
-                preprocess_methods=methods,
-                n_components=int(hp["n_components"]),
-                num_intervals=int(hp["num_intervals"]),
-                reps=reps_here,
-                n_splits=max(3, min(5, int(len(np.unique(groups_tr_all))))),
-            )
-            Xt_tr, Xt_te = _fit_transform_pair(Xtr_all[:, a:b], Xte_target[:, a:b], methods)
-            mdl = PLSRegression(n_components=int(hp["n_components"]))
-            mdl.fit(Xt_tr, Ytr_all)
-            yhat_ext_spec = mdl.predict(Xt_te).ravel()
-            hp_tag = f"C={hp['n_components']}__I={hp['num_intervals']}"
-        else:
-            Xt_tr, Xt_te = _fit_transform_pair(Xtr_all, Xte_target, methods)
-            if model == "pls":
-                mdl = PLSRegression(n_components=int(hp["n_components"]))
-                mdl.fit(Xt_tr, Ytr_all)
-                yhat_ext_spec = mdl.predict(Xt_te).ravel()
-                hp_tag = f"C={hp['n_components']}"
-            elif model == "rf":
-                rf = RandomForestRegressor(**hp, random_state=args.random_state, n_jobs=-1)
-                rf.fit(Xt_tr, Ytr_all.ravel())
-                yhat_ext_spec = rf.predict(Xt_te)
-                hp_tag = _rf_tag(hp)
-            elif model == "acfnn":
-                mlp = TorchRegressor(random_state=args.random_state, **hp)
-                mlp.fit(Xt_tr, Ytr_all.ravel())
-                yhat_ext_spec = mlp.predict(Xt_te).ravel()
-                hp_tag = _ac_tag(hp)
-            else:
-                raise ValueError(model)
-    
-        # Collapse to sample level and compute external metrics
-        y_pred_s, y_pred_std = _sample_means_stds(yhat_ext_spec, reps=reps_here)
-        ext_mets = _metrics(yte_target, y_pred_s)
-    
-        mlabel = " + ".join(methods) if methods else "No Preprocessing"
-    
-        row = {
-            "target": target_col,
-            "model": model,
-            "preprocessing": mlabel,
-            "hp": hp_tag,
-            # CV metrics (selection basis)
-            "cv_rmse": cv_mets["rmse"], "cv_r2": cv_mets["r2"],
-            "cv_mae": cv_mets["mae"], "cv_medae": cv_mets["medae"], "cv_evs": cv_mets["evs"],
-            # External metrics (report only; not used for selection)
-            "ext_rmse": ext_mets["rmse"], "ext_r2": ext_mets["r2"],
-            "ext_mae": ext_mets["mae"], "ext_medae": ext_mets["medae"], "ext_evs": ext_mets["evs"],
-        }
-    
-        best_candidate = {
-            "model": model,
-            "methods": methods,
-            "hp": hp,
-            "hp_tag": hp_tag,
-            "cv_rmse": cv_mets["rmse"],
-            "ext_preds_s": y_pred_s,
-            "ext_preds_std": y_pred_std,
-        }
-    
-        return {"row": row, "best": best_candidate}
+
 
     # For each target: parallel over (model, methods) combos with outer processes
     for nice, tcol in TARGETS:
