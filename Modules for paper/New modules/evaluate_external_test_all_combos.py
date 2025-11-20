@@ -41,7 +41,7 @@ from sklearn.model_selection import GroupKFold
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import StratifiedKFold, KFold
-
+import multiprocessing
 from sklearn.metrics import (
     mean_squared_error, r2_score,
     mean_absolute_error, median_absolute_error, explained_variance_score,
@@ -51,7 +51,9 @@ from sklearn.metrics import (
 from data_loader import load_data
 from preprocessing import Preprocessing
 from plot_parity import parity_plot_sample_level, save_outer_predictions_excel
-
+# Use almost all logical cores for HP search (leave 1–2 free)
+N_JOBS = max(1, multiprocessing.cpu_count() - 2)
+print(f"[INFO] Using {N_JOBS} parallel jobs for HP search")
 
 # ====================== Small utilities ======================
 
@@ -600,13 +602,14 @@ if __name__ == "__main__":
             
             # ---- Parallel-safe HP evaluation ----
             if model_name == "acfnn":
-                # NO joblib, run sequential to avoid worker crashes
+                # NO joblib, run sequential to avoid worker crashes with Torch on Windows
                 hp_stats = [score_hp(hp) for hp in hp_candidates]
             else:
-                # Use thread-based parallelism to avoid Windows process crashes
-                hp_stats = Parallel(n_jobs=4, backend="threading")(
+                # Thread-based parallelism; use almost all cores (N_JOBS) but keep RF n_jobs=1 inside
+                hp_stats = Parallel(n_jobs=N_JOBS, backend="threading")(
                     delayed(score_hp)(hp) for hp in hp_candidates
                 )
+
 
             mus = [m for (m, s) in hp_stats]
             best_ix = int(np.argmin(mus))
