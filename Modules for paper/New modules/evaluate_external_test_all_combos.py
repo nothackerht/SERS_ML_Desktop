@@ -55,7 +55,8 @@ from preprocessing import Preprocessing
 from plot_parity import parity_plot_sample_level, save_outer_predictions_excel
 
 # Number of PROCESSES for outer (model × preprocessing) level parallelism
-N_PROC = min(8, max(1, multiprocessing.cpu_count() - 2))
+# N_PROC = min(8, max(1, multiprocessing.cpu_count() - 2))
+N_PROC = 6
 print(f"[INFO] Using {N_PROC} processes for model × preprocessing combos")
 
 
