@@ -578,9 +578,12 @@ def main():
                 )
 
                 # 2) lock combo → evaluate once on SPXY holdout
-                yval_hat_spec = _train_predict(model_name, methods, hp, Xcal, ycal, Xval, groups_cal)
+                yval_hat_spec, interval_info = _train_predict(
+                    model_name, methods, hp, Xcal, ycal, Xval, groups_cal
+                )
                 yval_pred, yval_pred_sd = _sample_means_stds(yval_hat_spec, reps=REPS)
                 mets = _metrics(yval_true, yval_pred)
+
 
                 # save per-combo predictions under a model/prep folder
                 methods_key = '+'.join([m.replace(' ', '_') for m in methods]) if methods else 'none'
@@ -592,7 +595,21 @@ def main():
                     f"{tcol}__pred": yval_pred
                 }).to_excel(out_xlsx, index=False)
 
-                # record metrics row (selection vs validation)
+                # Default interval fields (for non-iPLS models)
+                interval_start_idx = np.nan
+                interval_end_idx   = np.nan
+                interval_start_wn  = np.nan
+                interval_end_wn    = np.nan
+            
+                # If this is an iPLS model, fill in the chosen interval and wavenumbers
+                if model_name == "ipls" and interval_info is not None:
+                    a = int(interval_info["a"])
+                    b = int(interval_info["b"])
+                    interval_start_idx = a
+                    interval_end_idx   = b
+                    interval_start_wn  = float(wn[a])
+                    interval_end_wn    = float(wn[b - 1])
+            
                 spxy_rows.append({
                     "repeat": r+1,
                     "target": tcol,
@@ -608,6 +625,10 @@ def main():
                     "val_mae": mets["mae"],
                     "val_medae": mets["medae"],
                     "val_evs": mets["evs"],
+                    "interval_start_idx": interval_start_idx,
+                    "interval_end_idx": interval_end_idx,
+                    "interval_start_wn": interval_start_wn,
+                    "interval_end_wn": interval_end_wn,
                 })
 
                 # 3) track winner BY TRAIN-ONLY EVIDENCE (1-SE toward simplicity)
@@ -617,7 +638,9 @@ def main():
                         "model": model_name, "methods": methods, "hp": hp_str,
                         "y_pred_best": yval_pred, "y_pred_sd_best": yval_pred_sd,
                         "val_rmse": mets["rmse"], "val_r2": mets["r2"],
+                        "interval_info": interval_info if model_name == "ipls" else None,
                     }
+
                 else:
                     thresh = best["sel_cv_rmse"] + best["sel_cv_sd"]
                     is_simpler = _is_simpler(
@@ -631,7 +654,9 @@ def main():
                             "model": model_name, "methods": methods, "hp": hp_str,
                             "y_pred_best": yval_pred, "y_pred_sd_best": yval_pred_sd,
                             "val_rmse": mets["rmse"], "val_r2": mets["r2"],
+                            "interval_info": interval_info if model_name == "ipls" else None,
                         })
+
 
             # write consolidated SPXY metrics table for this target & repeat
             if spxy_rows:
@@ -700,6 +725,19 @@ def main():
                 )
 
                 # add run summary (best-of-repeat)
+                interval_start_idx = np.nan
+                interval_end_idx   = np.nan
+                interval_start_wn  = np.nan
+                interval_end_wn    = np.nan
+                
+                if best["model"] == "ipls" and best.get("interval_info") is not None:
+                    a = int(best["interval_info"]["a"])
+                    b = int(best["interval_info"]["b"])
+                    interval_start_idx = a
+                    interval_end_idx   = b
+                    interval_start_wn  = float(wn[a])
+                    interval_end_wn    = float(wn[b - 1])
+                
                 summary_rows.append({
                     "target": tcol,
                     "repeat": r+1,
@@ -712,7 +750,12 @@ def main():
                     "sel_cv_sd": float(best["sel_cv_sd"]),
                     "val_rmse": float(best["val_rmse"]),
                     "val_r2": float(best["val_r2"]),
+                    "interval_start_idx": interval_start_idx,
+                    "interval_end_idx": interval_end_idx,
+                    "interval_start_wn": interval_start_wn,
+                    "interval_end_wn": interval_end_wn,
                 })
+
 
         # ---------- after all repeats for this target ----------
 
