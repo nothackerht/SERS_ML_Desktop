@@ -45,12 +45,11 @@ OUT_CV = {
     "B123_no_controls"  : r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Modules for paper\10-Fold CV\box 1-3 without controls",
 }
 OUT_SPXY = {
-    "B12_with_controls" : r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Modules for paper\SPXY\10 SPXY 1-se\SPXY Box 1-2 Controls",
-    "B12_no_controls"   : r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Modules for paper\SPXY\10 SPXY 1-se\SPXY Box 1-2 without Controls",
-    "B123_with_controls": r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Modules for paper\SPXY\10 SPXY 1-se\SPXY Box 1-3 Controls",
-    "B123_no_controls"  : r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Modules for paper\SPXY\10 SPXY 1-se\SPXY Box 1-3 without Controls",
+    "B12_with_controls" : r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Modules for paper\SPXY\box 1-2 with controls",
+    "B12_no_controls"   : r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Modules for paper\SPXY\box 1-2 without controls",
+    "B123_with_controls": r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Modules for paper\SPXY\box 1-3 with controls",
+    "B123_no_controls"  : r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Modules for paper\SPXY\box 1-3 without controls",
 }
-
 # External test (train 1–2 -> test 3)
 OUT_EXT = {
     "B12_with_controls" : r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\Modules for paper\External Test\box 3 with controls",
@@ -81,7 +80,18 @@ SCENARIOS = {
 
 # -------------------------- Leaderboard roots for SPXY replay --------------------------
 # For B12_* use "box1and2withcontrols" dirs; for B123_* use "COmbinedCVresultsnocontrol" dirs (to match your files)
-
+SPXY_LEADERBOARDS = {
+    "B12": {
+        "ADF_pp_avg":  r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\ten_fold_cv_global_combined\box1and2withcontrols\ADF_pp_avg",
+        "HGS_pp_avg":  r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\ten_fold_cv_global_combined\box1and2withcontrols\HGS_pp_avg",
+        "target_SI":   r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\ten_fold_cv_global_combined\box1and2withcontrols\target_SI",
+    },
+    "B123": {
+        "ADF_pp_avg":  r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\ten_fold_cv_global_combined\COmbinedCVresultsnocontrol\ADF_pp_avg",
+        "HGS_pp_avg":  r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\ten_fold_cv_global_combined\COmbinedCVresultsnocontrol\HGS_pp_avg",
+        "target_SI":   r"C:\Users\spect\Desktop\MD-Analysis-main (3)\SERS_ML_Desktop\ten_fold_cv_global_combined\COmbinedCVresultsnocontrol\target_SI",
+    }
+}
 
 # -------------------------- Utils --------------------------
 def _ensure_exists(path_str: str, kind: str):
@@ -122,7 +132,14 @@ def run_spxy(repeats: int = 10, aggregate_selection: bool = True):
         out_dir = OUT_SPXY[key]
         os.makedirs(out_dir, exist_ok=True)
 
+        # Choose leaderboard roots by scenario
+        roots = SPXY_LEADERBOARDS["B12"] if key.startswith("B12") else SPXY_LEADERBOARDS["B123"]
 
+        print(f"\n--- SPXY: {key} ---")
+        _ensure_exists(cfg["data_dir"], "data_dir")
+        _ensure_exists(cfg["meta_path"], "meta_path")
+        for tname, rpath in roots.items():
+            _ensure_exists(rpath, f"leaderboard[{tname}]")
 
         cmd = [
             sys.executable, str(MOD_SPXY),
@@ -130,7 +147,9 @@ def run_spxy(repeats: int = 10, aggregate_selection: bool = True):
             "--meta_path", cfg["meta_path"],
             "--include_types", cfg["include_types"],
             "--out_dir", out_dir,
-
+            "--results_dir_adf", roots["ADF_pp_avg"],
+            "--results_dir_hgs", roots["HGS_pp_avg"],
+            "--results_dir_si",  roots["target_SI"],
             "--spxy_repeats", str(int(repeats)),
             "--aggregate_selection_across_seeds", "1" if aggregate_selection else "0",
         ]

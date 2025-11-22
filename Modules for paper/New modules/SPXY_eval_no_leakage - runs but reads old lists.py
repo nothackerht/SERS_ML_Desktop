@@ -112,119 +112,6 @@ CAL_FRAC = 0.80      # SPXY calibration fraction
 ALPHA = 0.5          # SPXY weighting between X and y distances
 
 INNER_FOLDS = 5      # inner CV folds on SPXY-train
-# ===== Model / preprocessing grids (match nested 10-fold CV) =====
-
-PREPROCESS_GRID = [
-    [], ["EMSC"], ["Normalization"], ["SNV"], ["Second Derivative"],
-    ["EMSC","Normalization"], ["EMSC","SNV"], ["EMSC","Second Derivative"],
-    ["Normalization","EMSC"], ["Normalization","SNV"], ["Normalization","Second Derivative"],
-    ["SNV","EMSC"], ["SNV","Normalization"], ["SNV","Second Derivative"],
-    ["Second Derivative","EMSC"], ["Second Derivative","Normalization"], ["Second Derivative","SNV"],
-]
-
-PLS_COMPONENTS  = list(range(2, 19))
-IPLS_COMPONENTS = list(range(2, 11))
-IPLS_INTERVALS  = [5, 10, 15]
-
-def generate_random_rf_params(num_iterations=20, seed=42):
-    import random as _random
-    rng = _random.Random(seed)
-    grid = []
-    for _ in range(num_iterations):
-        grid.append({
-            "n_estimators":      rng.choice([50, 100, 150, 160, 170, 180, 190]),
-            "max_features":      "sqrt",
-            "max_depth":         rng.choice([10, 15, 20, 25]),
-            "min_samples_split": rng.choice([2, 10, 50, 100, 130, 140, 150, 160, 170, 180]),
-            "min_samples_leaf":  rng.choice([1, 10, 30, 40, 47, 48, 50, 55, 60]),
-        })
-    return grid
-
-RF_GRID = generate_random_rf_params(20, seed=BASE_SEED)
-
-ACFNN_GRID = [
-    {"hidden_layer_sizes": (256, 128),    "activation":"relu", "alpha":1e-4, "learning_rate_init":1e-3, "batch_size":256, "max_iter":200},
-    {"hidden_layer_sizes": (512, 256),    "activation":"relu", "alpha":1e-4, "learning_rate_init":5e-4, "batch_size":256, "max_iter":300},
-    {"hidden_layer_sizes": (256,256,128), "activation":"relu", "alpha":1e-5, "learning_rate_init":1e-3, "batch_size":512, "max_iter":300},
-]
-
-RUN_PLS   = True
-RUN_RF    = True
-RUN_IPLS  = True
-RUN_ACFNN = True
-
-def _build_all_combos() -> pd.DataFrame:
-    """
-    Generate the full (model, preprocessing, hp_tag) grid,
-    matching the nested 10-fold CV / external-test pipelines.
-    """
-    rows = []
-    for methods in PREPROCESS_GRID:
-        prep_label = " + ".join(methods) if methods else "No Preprocessing"
-
-        # PLS
-        if RUN_PLS:
-            for c in PLS_COMPONENTS:
-                hp = {"n_components": int(c)}
-                rows.append({
-                    "model": "pls",
-                    "preprocessing": prep_label,
-                    "hp": _pls_tag(hp),
-                })
-
-        # iPLS
-        if RUN_IPLS:
-            for c in IPLS_COMPONENTS:
-                for I in IPLS_INTERVALS:
-                    hp = {"n_components": int(c), "num_intervals": int(I)}
-                    rows.append({
-                        "model": "ipls",
-                        "preprocessing": prep_label,
-                        "hp": _ipls_tag(hp),
-                    })
-
-        # RF
-        if RUN_RF:
-            for hp in RF_GRID:
-                rows.append({
-                    "model": "rf",
-                    "preprocessing": prep_label,
-                    "hp": _rf_tag(hp),
-                })
-
-        # AC-FNN
-        if RUN_ACFNN:
-            for hp in ACFNN_GRID:
-                rows.append({
-                    "model": "acfnn",
-                    "preprocessing": prep_label,
-                    "hp": _ac_tag(hp),
-                })
-
-    combos_df = pd.DataFrame(rows)
-    print(f"[INFO] Built {len(combos_df)} (model, preprocessing, hp) combos in SPXY.")
-    return combos_df
-
-# --- hp tagging helpers (so hp_str is reproducible and parseable) ---
-
-def _pls_tag(hp: dict) -> str:
-    return f"C={int(hp['n_components'])}"
-
-def _ipls_tag(hp: dict) -> str:
-    return f"C={int(hp['n_components'])}__I={int(hp['num_intervals'])}"
-
-def _rf_tag(hp: dict) -> str:
-    return (f"ne{hp['n_estimators']}_md{hp['max_depth']}_"
-            f"mss{hp['min_samples_split']}_msl{hp['min_samples_leaf']}_mf{hp['max_features']}")
-
-def _ac_tag(hp: dict) -> str:
-    hls = hp["hidden_layer_sizes"]
-    if isinstance(hls, (list, tuple)):
-        hls_str = "-".join(map(str, hls))
-    else:
-        hls_str = str(hls)
-    return (f"hls{hls_str}_act{hp.get('activation','relu')}_bs{hp.get('batch_size','NA')}"
-            f"_lr{hp.get('learning_rate_init','NA')}_wd{hp.get('alpha','0')}_mi{hp.get('max_iter','NA')}")
 
 # ====================== HELPERS ======================
 
@@ -610,9 +497,22 @@ def main():
         Xs = X_sample[keep]
         orig_keep_idx = np.where(keep)[0]
 
-        # Build full model × preprocessing × hyperparameter grid internally
-        combos_df = _build_all_combos()
+        # combos source for this target (explicit per your mapping)
+        results_dir = RESULT_DIRS_MAP.get(tcol)
+        if results_dir is None:
+            raise FileNotFoundError(f"No results_dir provided for {tcol}.")
 
+        combos_df = _load_combos_from_csv_dir(results_dir)
+
+        # Filter to supported model types only
+        allowed_models = {"pls", "rf", "acfnn", "ipls"}
+        combos_df["model"] = combos_df["model"].astype(str).str.strip()
+        invalid = sorted(set(combos_df["model"].str.lower()) - allowed_models)
+        if invalid:
+            print(f"[WARN] Dropping combos with unsupported models for {tcol}: {invalid}")
+        combos_df = combos_df[combos_df["model"].str.lower().isin(allowed_models)].reset_index(drop=True)
+        if combos_df.empty:
+            raise ValueError(f"No valid (model, preprocessing, hp) combos found for {tcol} after filtering.")
 
         # ---------- SPXY repeats ----------
         for r in range(N_REPEATS):
