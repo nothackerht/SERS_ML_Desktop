@@ -190,13 +190,25 @@ def _fit_transform_pair(X_tr: np.ndarray, X_ap: np.ndarray, methods: list[str]):
     return A.T.astype(np.float32), B.T.astype(np.float32)
 
 def _train_predict(model_name, methods, hp, Xcal, ycal, Xval, groups_cal):
+    """
+    Train on Xcal/ycal and predict on Xval.
+
+    Returns
+    -------
+    y_pred_spec : np.ndarray
+        Spectrum-level predictions for Xval.
+    interval_info : dict or None
+        For iPLS models: {"a": int, "b": int} giving the selected column indices.
+        For other models: None.
+    """
     model_name = model_name.lower().strip()
+    interval_info = None
 
     if model_name == "pls":
         Xt_tr, Xt_va = _fit_transform_pair(Xcal, Xval, methods)
         mdl = PLSRegression(n_components=int(hp["n_components"]))
         mdl.fit(Xt_tr, ycal)
-        return mdl.predict(Xt_va).ravel()
+        return mdl.predict(Xt_va).ravel(), interval_info
 
     if model_name == "rf":
         Xt_tr, Xt_va = _fit_transform_pair(Xcal, Xval, methods)
@@ -206,28 +218,30 @@ def _train_predict(model_name, methods, hp, Xcal, ycal, Xval, groups_cal):
             max_features=hp["max_features"], random_state=BASE_SEED, n_jobs=-1
         )
         rf.fit(Xt_tr, ycal.ravel())
-        return rf.predict(Xt_va)
+        return rf.predict(Xt_va), interval_info
 
     if model_name == "acfnn":
         Xt_tr, Xt_va = _fit_transform_pair(Xcal, Xval, methods)
         mlp = MLPRegressor(random_state=BASE_SEED, **hp)
         mlp.fit(Xt_tr, ycal.ravel())
-        return mlp.predict(Xt_va)
+        return mlp.predict(Xt_va), interval_info
 
     if model_name == "ipls":
         num_intervals = int(hp["num_intervals"]); n_components = int(hp["n_components"])
-        (a,b), _ = _best_interval_grouped(
+        (a, b), _ = _best_interval_grouped(
             X_tr=Xcal, Y_tr=ycal, groups_tr=groups_cal,
             preprocess_methods=methods, n_components=n_components, num_intervals=num_intervals,
             reps=REPS, n_splits=max(3, min(5, int(len(np.unique(groups_cal))))),
             random_state=BASE_SEED
         )
+        interval_info = {"a": int(a), "b": int(b)}
         Xt_tr, Xt_va = _fit_transform_pair(Xcal[:, a:b], Xval[:, a:b], methods)
         mdl = PLSRegression(n_components=n_components)
         mdl.fit(Xt_tr, ycal)
-        return mdl.predict(Xt_va).ravel()
+        return mdl.predict(Xt_va).ravel(), interval_info
 
     raise ValueError(f"Unsupported model: {model_name}")
+
 
 
 def _metrics(y_true, y_pred):
